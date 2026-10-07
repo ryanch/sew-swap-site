@@ -1,0 +1,81 @@
+# Local dev stack: `docker compose up --build`
+# Every value can be overridden with a .env file (see .env.example).
+name: sew-swap
+
+services:
+  spanner:
+    image: gcr.io/cloud-spanner-emulator/emulator:latest
+    # platform: linux/amd64   # uncomment if your Apple Silicon Mac can't pull an arm64 image
+    ports:
+      - "9010:9010" # gRPC (used by client libraries)
+      - "9020:9020" # REST
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "1025:1025" # SMTP
+      - "8025:8025" # Web UI -> http://localhost:8025
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ./apps/api
+      target: dev
+    ports:
+      - "${API_PORT:-8080}:8080"
+    environment:
+      PORT: 8080
+      NODE_ENV: development
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-sew-swap-local}
+      SPANNER_EMULATOR_HOST: spanner:9010
+      SPANNER_INSTANCE: ${SPANNER_INSTANCE:-local-instance}
+      SPANNER_DATABASE: ${SPANNER_DATABASE:-sew-swap}
+      MIGRATIONS_DIR: /migrations
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+      MAIL_FROM: ${MAIL_FROM:-Sew Swap <no-reply@sewswap.local>}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:5173}
+      AUTH_SECRET: ${AUTH_SECRET:-dev-only-insecure-secret-change-me}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+    volumes:
+      - ./apps/api/src:/app/src
+      - ./db/migrations:/migrations:ro
+    depends_on:
+      spanner:
+        condition: service_started
+      mailpit:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./apps/web
+      target: dev
+    ports:
+      - "${WEB_PORT:-5173}:5173"
+    environment:
+      VITE_API_PROXY: http://api:8080
+    volumes:
+      - ./apps/web/src:/app/src
+    depends_on:
+      - api
+
+  # Playwright end-to-end tests. Run with:
+  #   docker compose --profile test run --rm --build e2e
+  e2e:
+    profiles: ["test"]
+    build: ./e2e
+    environment:
+      BASE_URL: http://web:5173
+      MAILPIT_URL: http://mailpit:8025
+    volumes:
+      - ./e2e/tests:/e2e/tests
+      - ./e2e/playwright-report:/e2e/playwright-report
+      - ./e2e/test-results:/e2e/test-results
+    depends_on:
+      - web
+      - mailpit

@@ -1,0 +1,41 @@
+# --- Dependencies ---
+node_modules/
+
+# --- Build output ---
+dist/
+build/
+*.tsbuildinfo
+
+# --- Environment / secrets ---
+# .env holds local overrides (AUTH_SECRET, Google OAuth keys). Never commit it.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+# GCP service account keys
+*-sa.json
+service-account*.json
+application_default_credentials.json
+
+# --- Test output (Playwright) ---
+e2e/playwright-report/
+e2e/test-results/
+e2e/blob-report/
+e2e/playwright/.cache/
+coverage/
+
+# --- Logs ---
+*.log
+npm-debug.log*
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+
+temp/*

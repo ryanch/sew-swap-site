@@ -1,0 +1,18 @@
+# Rendered at container start by the nginx image's envsubst step.
+# Only ${PORT} and ${API_UPSTREAM} are substituted; nginx's own $vars are left alone.
+server {
+  listen ${PORT};
+  root /usr/share/nginx/html;
+
+  location /api/ {
+    proxy_pass ${API_UPSTREAM};
+    proxy_set_header Host $proxy_host;
+    proxy_ssl_server_name on;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
+
+  location / {
+    try_files $uri /index.html;
+  }
+}
