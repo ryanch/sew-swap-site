@@ -13,6 +13,18 @@ export default function HomePage() {
       {welcome && <p className="notice">Welcome! Your account is ready.</p>}
       <h1>Hello, {user?.displayName ?? user?.email}</h1>
       <p className="muted">You are signed in as {user?.email}.</p>
+      <p>
+        <Link className="button secondary" to="/swaps">
+          Browse swaps
+        </Link>
+      </p>
+      {hasRole(user, 'swap_manager') && (
+        <p>
+          <Link className="button secondary" to="/manage/swaps">
+            Manage my swaps
+          </Link>
+        </p>
+      )}
       {hasRole(user, 'admin') && (
         <p>
           <Link className="button secondary" to="/admin/users">

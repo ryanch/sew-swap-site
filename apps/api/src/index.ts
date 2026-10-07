@@ -6,6 +6,7 @@ import { spanner } from './db/spanner';
 import { adminRoutes } from './routes/admin';
 import { authRoutes } from './routes/auth';
 import { healthRoutes } from './routes/health';
+import { swapRoutes } from './routes/swaps';
 
 async function main() {
   // trustProxy: Cloud Run (and the local Vite/nginx proxy) sit in front of the API.
@@ -19,6 +20,7 @@ async function main() {
   await app.register(healthRoutes);
   await app.register(authRoutes);
   await app.register(adminRoutes);
+  await app.register(swapRoutes);
 
   // Cloud Run sends SIGTERM before stopping an instance.
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {

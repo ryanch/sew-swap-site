@@ -37,8 +37,12 @@ Node isn't installed on the host, so run npm inside containers. If docker can't 
 - Emails in `ADMIN_EMAILS` get `admin` when they sign in. That role can't be removed in the app, and no admin can remove their own Admin role. Admins can't create users; accounts are made on first sign-in.
 - Locally, `admin@example.test` is the admin (e2e signs in as it), and compose raises `LOGIN_REQUESTS_PER_HOUR` to 50.
 
-## Next: swaps
-- Swaps, created by swap managers.
-- `SwapMembers(SwapId, UserId, Role)` covers a manager running several swaps, a helper on several swaps, and a user in several swaps.
+## Swaps (done)
+- `Swaps` (title, description, five `DATE` columns) and `SwapMembers(SwapId, UserId, Role)`, in `0004_swaps.sql`. The API sends and takes dates as `YYYY-MM-DD` strings (`FORMAT_DATE` in SQL).
+- Any signed-in user can browse `/swaps` and open a detail page with a disabled Join button. Sign-up isn't built yet.
+- Swap managers (and admins) create swaps at `/manage/swaps`. The creator gets a `manager` row in `SwapMembers`. Only that swap's managers and admins can edit it (`canManage` in `routes/swaps.ts`).
+
+## Next
+- Users signing up for swaps (`participant` rows in `SwapMembers`) and the manager pairing them.
 - Pods (a loop of makers; hidden from participants, and they set a helper's scope).
 - Partner pairings.
