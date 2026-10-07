@@ -1,8 +1,14 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
-import { Navigate, useLocation } from 'react-router-dom';
+import { Link, Navigate, useLocation } from 'react-router-dom';
 import { api } from '../api';
 
-export type User = { userId: string; email: string; displayName: string | null };
+export type GlobalRole = 'admin' | 'swap_manager';
+export type User = { userId: string; email: string; displayName: string | null; roles: GlobalRole[] };
+
+/** Admin implies every role (same rule as the API). */
+export function hasRole(user: User | null, role: GlobalRole): boolean {
+  return !!user && (user.roles.includes('admin') || user.roles.includes(role));
+}
 
 type AuthState = {
   user: User | null;
@@ -58,5 +64,20 @@ export function RequireAuth({ children }: { children: ReactNode }) {
   const location = useLocation();
   if (loading) return <main><p className="muted">Loading…</p></main>;
   if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  return <>{children}</>;
+}
+
+/** Use inside <RequireAuth>. */
+export function RequireRole({ role, children }: { role: GlobalRole; children: ReactNode }) {
+  const { user } = useAuth();
+  if (!hasRole(user, role)) {
+    return (
+      <main className="stack">
+        <h1>No access</h1>
+        <p>You don't have access to this page.</p>
+        <Link to="/">Go to the home page</Link>
+      </main>
+    );
+  }
   return <>{children}</>;
 }

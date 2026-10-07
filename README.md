@@ -31,6 +31,10 @@ Optional overrides go in a `.env` file (see `.env.example`).
 - The sign-in email arrives in Mailpit (http://localhost:8025). It has a button and a 6-digit code; either one signs you in.
 - Each link or code works once and expires after 15 minutes. You can request at most 5 emails per address per hour.
 
+### Admins and roles
+
+Emails listed in `ADMIN_EMAILS` (comma-separated) become admins when they sign in. Locally the default is `admin@example.test`. Admins open **Manage user roles** on the home page and grant or remove *Admin* and *Swap Manager* for anyone who has signed in. Locally, compose allows 50 sign-in emails per address per hour (`LOGIN_REQUESTS_PER_HOUR`) instead of 5.
+
 ### Enabling Google sign-in (optional)
 
 1. In the GCP console, go to **APIs & Services → Credentials**. Create an **OAuth client ID** of type *Web application*.
@@ -41,7 +45,7 @@ The "Sign in with Google" button appears once both are set. If a Google account'
 
 ## Tests
 
-End-to-end tests (Playwright) live in `e2e/`. They cover signup via email link, returning-user login, and single-use links. They read the sign-in emails from Mailpit's API.
+End-to-end tests (Playwright) live in `e2e/`. They cover signup via email link, returning-user login, single-use links, and admin role management. They read the sign-in emails from Mailpit's API.
 
 ```sh
 docker compose up -d --build                         # stack must be running

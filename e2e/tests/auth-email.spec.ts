@@ -1,22 +1,6 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
+import { currentUser, openSignInLink, requestSignInLink } from '../helpers/auth';
 import { uniqueEmail, waitForLoginEmail } from '../helpers/mailpit';
-
-async function requestSignInLink(page: Page, email: string) {
-  await page.goto('/login');
-  await page.getByLabel('Email address').fill(email);
-  await page.getByRole('button', { name: 'Email me a sign-in link' }).click();
-  await expect(page.getByRole('heading', { name: 'Check your email' })).toBeVisible();
-}
-
-/** The email's link points at APP_BASE_URL (localhost:5173), so open the same path on our baseURL. */
-async function openSignInLink(page: Page, token: string) {
-  await page.goto(`/login/verify?token=${encodeURIComponent(token)}`);
-}
-
-async function currentUser(page: Page) {
-  const res = await page.request.get('/api/auth/me');
-  return { status: res.status(), body: res.ok() ? await res.json() : null };
-}
 
 test('signup: a new email address gets an account via the email link', async ({ page }) => {
   const email = uniqueEmail('signup');

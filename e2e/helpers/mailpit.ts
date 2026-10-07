@@ -12,6 +12,16 @@ export function uniqueEmail(prefix = 'e2e'): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.test`;
 }
 
+async function searchByRecipient(to: string): Promise<SearchResult> {
+  const res = await fetch(`${MAILPIT_URL}/api/v1/search?query=${encodeURIComponent(`to:"${to}"`)}`);
+  return (await res.json()) as SearchResult;
+}
+
+/** IDs of mail already sent to `to`, for `waitForLoginEmail({ excludeIds })`. */
+export async function listEmailIds(to: string): Promise<string[]> {
+  return (await searchByRecipient(to)).messages.map((m) => m.ID);
+}
+
 /**
  * Waits for the newest sign-in email to `to` (optionally newer than `after`)
  * and pulls out the magic-link token and 6-digit code.
@@ -21,8 +31,7 @@ export async function waitForLoginEmail(to: string, opts: { excludeIds?: string[
   await expect
     .poll(
       async () => {
-        const res = await fetch(`${MAILPIT_URL}/api/v1/search?query=${encodeURIComponent(`to:"${to}"`)}`);
-        const data = (await res.json()) as SearchResult;
+        const data = await searchByRecipient(to);
         const fresh = data.messages.filter((m) => !opts.excludeIds?.includes(m.ID));
         id = fresh[0]?.ID ?? '';
         return id;

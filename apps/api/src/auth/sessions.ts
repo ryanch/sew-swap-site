@@ -3,7 +3,8 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { config } from '../config';
 import { database } from '../db/spanner';
 import { hmac, randomToken } from './crypto';
-import type { AuthUser } from './users';
+import { rolesSubquery } from './roles';
+import { toAuthUser, type AuthUser } from './users';
 
 export const SESSION_COOKIE = 'sid';
 
@@ -24,14 +25,14 @@ export function createSession(tx: Transaction, userId: string, req: FastifyReque
 
 export async function getUserBySessionToken(token: string): Promise<AuthUser | null> {
   const [rows] = await database.run({
-    sql: `SELECT u.UserId, u.Email, u.DisplayName
+    sql: `SELECT u.UserId, u.Email, u.DisplayName, ${rolesSubquery('u')}
           FROM Sessions s JOIN Users u ON u.UserId = s.UserId
           WHERE s.SessionIdHash = @hash AND s.ExpiresAt > CURRENT_TIMESTAMP()`,
     params: { hash: hmac(token) },
     json: true,
   });
-  const row = rows[0] as { UserId: string; Email: string; DisplayName: string | null } | undefined;
-  return row ? { userId: row.UserId, email: row.Email, displayName: row.DisplayName } : null;
+  const row = rows[0] as Parameters<typeof toAuthUser>[0] | undefined;
+  return row ? toAuthUser(row) : null;
 }
 
 export async function deleteSession(token: string): Promise<void> {

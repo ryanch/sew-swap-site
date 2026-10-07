@@ -1,5 +1,6 @@
 import { BrowserRouter, Route, Routes } from 'react-router-dom';
-import { AuthProvider, RequireAuth } from './auth/AuthContext';
+import { AuthProvider, RequireAuth, RequireRole } from './auth/AuthContext';
+import AdminUsersPage from './pages/AdminUsersPage';
 import HomePage from './pages/HomePage';
 import LoginPage from './pages/LoginPage';
 import StatusPage from './pages/StatusPage';
@@ -15,6 +16,16 @@ export default function App() {
             element={
               <RequireAuth>
                 <HomePage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/admin/users"
+            element={
+              <RequireAuth>
+                <RequireRole role="admin">
+                  <AdminUsersPage />
+                </RequireRole>
               </RequireAuth>
             }
           />

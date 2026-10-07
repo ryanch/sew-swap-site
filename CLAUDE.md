@@ -30,5 +30,15 @@ Node isn't installed on the host, so run npm inside containers. If docker can't 
 - The emulator allows one read-write transaction at a time, so e2e uses `workers: 1`. Real Spanner doesn't have this limit.
 - The Vite dev server allows host `web` (needed by the e2e container).
 
-## Next: roles and swaps
-Roles: Admin (creates any user, sees all swaps), Swap Manager, Swap Helper (pods), User (signs up for swaps).
+## Roles (done)
+- Two scopes. **Global roles** live in `UserRoles` and are granted by admins at `/admin/users`: `admin` (can do everything) and `swap_manager` (can create swaps). Every signed-in person is a regular user, which needs no row.
+- **Swap roles** (`manager`, `helper`, `participant`) are typed in `src/auth/roles.ts` but have no table yet.
+- `request.user.roles` is loaded with the session. Protect routes with `{ preHandler: requireRole('admin') }`. Admin implies every role (`hasRole`).
+- Emails in `ADMIN_EMAILS` get `admin` when they sign in. That role can't be removed in the app, and no admin can remove their own Admin role. Admins can't create users; accounts are made on first sign-in.
+- Locally, `admin@example.test` is the admin (e2e signs in as it), and compose raises `LOGIN_REQUESTS_PER_HOUR` to 50.
+
+## Next: swaps
+- Swaps, created by swap managers.
+- `SwapMembers(SwapId, UserId, Role)` covers a manager running several swaps, a helper on several swaps, and a user in several swaps.
+- Pods (a loop of makers; hidden from participants, and they set a helper's scope).
+- Partner pairings.

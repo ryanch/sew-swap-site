@@ -42,6 +42,9 @@ services:
       AUTH_SECRET: ${AUTH_SECRET:-dev-only-insecure-secret-change-me}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-admin@example.test}
+      # Higher than the production default (5) so repeated e2e runs don't lock out the admin account.
+      LOGIN_REQUESTS_PER_HOUR: ${LOGIN_REQUESTS_PER_HOUR:-50}
     volumes:
       - ./apps/api/src:/app/src
       - ./db/migrations:/migrations:ro

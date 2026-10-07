@@ -29,7 +29,12 @@ export const config = {
     secret: required('AUTH_SECRET'),
     sessionTtlDays: Number(process.env.SESSION_TTL_DAYS ?? 30),
     loginTokenTtlMinutes: 15,
-    maxLoginRequestsPerHour: 5,
+    maxLoginRequestsPerHour: Number(process.env.LOGIN_REQUESTS_PER_HOUR ?? 5),
+    // Always admins; lowercased like Users.Email.
+    adminEmails: (process.env.ADMIN_EMAILS ?? '')
+      .split(',')
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean),
     maxCodeAttempts: 5,
     cookieSecure: appBaseUrl.startsWith('https://'),
   },

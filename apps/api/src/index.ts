@@ -3,6 +3,7 @@ import { config } from './config';
 import { authPlugin } from './auth/plugin';
 import { bootstrapEmulator } from './db/bootstrap';
 import { spanner } from './db/spanner';
+import { adminRoutes } from './routes/admin';
 import { authRoutes } from './routes/auth';
 import { healthRoutes } from './routes/health';
 
@@ -17,6 +18,7 @@ async function main() {
   await app.register(authPlugin);
   await app.register(healthRoutes);
   await app.register(authRoutes);
+  await app.register(adminRoutes);
 
   // Cloud Run sends SIGTERM before stopping an instance.
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {

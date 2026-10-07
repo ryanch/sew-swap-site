@@ -1,5 +1,5 @@
-import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import { useAuth } from '../auth/AuthContext';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { hasRole, useAuth } from '../auth/AuthContext';
 
 export default function HomePage() {
   const { user, logout } = useAuth();
@@ -13,6 +13,13 @@ export default function HomePage() {
       {welcome && <p className="notice">Welcome! Your account is ready.</p>}
       <h1>Hello, {user?.displayName ?? user?.email}</h1>
       <p className="muted">You are signed in as {user?.email}.</p>
+      {hasRole(user, 'admin') && (
+        <p>
+          <Link className="button secondary" to="/admin/users">
+            Manage user roles
+          </Link>
+        </p>
+      )}
       <button
         className="secondary"
         onClick={async () => {
