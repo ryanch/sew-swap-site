@@ -32,17 +32,23 @@ Node isn't installed on the host, so run npm inside containers. If docker can't 
 
 ## Roles (done)
 - Two scopes. **Global roles** live in `UserRoles` and are granted by admins at `/admin/users`: `admin` (can do everything) and `swap_manager` (can create swaps). Every signed-in person is a regular user, which needs no row.
-- **Swap roles** (`manager`, `helper`, `participant`) are typed in `src/auth/roles.ts` but have no table yet.
+- **Swap roles** (`manager`, `helper`, `participant`) are typed in `src/auth/roles.ts` but are stored in `SwapMembers`.
 - `request.user.roles` is loaded with the session. Protect routes with `{ preHandler: requireRole('admin') }`. Admin implies every role (`hasRole`).
 - Emails in `ADMIN_EMAILS` get `admin` when they sign in. That role can't be removed in the app, and no admin can remove their own Admin role. Admins can't create users; accounts are made on first sign-in.
 - Locally, `admin@example.test` is the admin (e2e signs in as it), and compose raises `LOGIN_REQUESTS_PER_HOUR` to 50.
 
 ## Swaps (done)
-- `Swaps` (title, description, five `DATE` columns) and `SwapMembers(SwapId, UserId, Role)`, in `0004_swaps.sql`. The API sends and takes dates as `YYYY-MM-DD` strings (`FORMAT_DATE` in SQL).
-- Any signed-in user can browse `/swaps` and open a detail page with a disabled Join button. Sign-up isn't built yet.
+- `Swaps` (title, description, five `DATE` columns) and `SwapMembers(SwapId, UserId, Role)` (see Joining swaps), in `0004_swaps.sql`. The API sends and takes dates as `YYYY-MM-DD` strings (`FORMAT_DATE` in SQL).
+- Any signed-in user can browse `/swaps` and open a detail page.
 - Swap managers (and admins) create swaps at `/manage/swaps`. The creator gets a `manager` row in `SwapMembers`. Only that swap's managers and admins can edit it (`canManage` in `routes/swaps.ts`).
 
+## Joining swaps (done)
+- `SwapMembers` is keyed `(SwapId, UserId, Role)`, so anyone can join as a `participant`, including a swap's own manager or an admin, without losing their other role.
+- `PUT`/`DELETE /api/swaps/:swapId/membership` join and leave. Joining works only from `SignUpOpens` through `SignUpCloses` inclusive, compared to `CURRENT_DATE()` (UTC). Leaving is always allowed and removes only the participant row.
+- `GET /api/swaps/:swapId/members` (managers and admins) lists participants with keyset pagination on `UserId` (`limit`, `after`, returns `nextCursor` and `total`). The UI is `/manage/swaps/:swapId/members`.
+- e2e swaps that must stay "not open" use 2099 dates; tests that need an open swap compute dates from today.
+
 ## Next
-- Users signing up for swaps (`participant` rows in `SwapMembers`) and the manager pairing them.
+- The manager pairing participants.
 - Pods (a loop of makers; hidden from participants, and they set a helper's scope).
 - Partner pairings.

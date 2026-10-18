@@ -21,7 +21,7 @@ CREATE TABLE SwapMembers (
   Role STRING(32) NOT NULL,            -- 'manager' | 'helper' | 'participant'
   CreatedAt TIMESTAMP NOT NULL OPTIONS (allow_commit_timestamp = true),
   CONSTRAINT CK_SwapMembersRole CHECK (Role IN ('manager', 'helper', 'participant')),
-) PRIMARY KEY (SwapId, UserId),
+) PRIMARY KEY (SwapId, UserId, Role),
   INTERLEAVE IN PARENT Swaps ON DELETE CASCADE;
 
 CREATE INDEX SwapMembersByUser ON SwapMembers (UserId, SwapId);

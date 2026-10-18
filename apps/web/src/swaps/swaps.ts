@@ -22,3 +22,7 @@ export const DATE_FIELDS = [
   ['makingDeadline', 'Making deadline'],
   ['shipBy', 'Ship by'],
 ] as const;
+
+export type SignUpStatus = 'upcoming' | 'open' | 'closed';
+
+export type SwapMember = { userId: string; email: string; displayName: string | null; joinedAt: string };

@@ -42,6 +42,8 @@ function toSwap(row: SwapRow) {
   };
 }
 
+type MemberRow = { UserId: string; Email: string; DisplayName: string | null; JoinedAt: string };
+
 async function getSwap(swapId: string) {
   const [rows] = await database.run({
     sql: `SELECT ${SWAP_COLUMNS} FROM Swaps s WHERE s.SwapId = @swapId`,
@@ -144,7 +146,131 @@ export async function swapRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const swap = await getSwap(req.params.swapId);
       if (!swap) return reply.code(404).send({ error: 'That swap was not found.' });
-      return { swap, canEdit: await canManage(req.user!, swap.swapId) };
+      const [[status], [membership], canEdit] = await Promise.all([
+        database.run({
+          sql: `SELECT CASE WHEN CURRENT_DATE() < SignUpOpens THEN 'upcoming'
+                            WHEN CURRENT_DATE() > SignUpCloses THEN 'closed'
+                            ELSE 'open' END AS Status
+                FROM Swaps WHERE SwapId = @swapId`,
+          params: { swapId: swap.swapId },
+          json: true,
+        }),
+        database.run({
+          sql: `SELECT FORMAT_TIMESTAMP('%FT%TZ', CreatedAt) AS JoinedAt FROM SwapMembers
+                WHERE SwapId = @swapId AND UserId = @userId AND Role = 'participant'`,
+          params: { swapId: swap.swapId, userId: req.user!.userId },
+          json: true,
+        }),
+        canManage(req.user!, swap.swapId),
+      ]);
+      return {
+        swap,
+        canEdit,
+        signUpStatus: (status[0] as { Status: string }).Status,
+        membership: membership[0] ? { joinedAt: (membership[0] as { JoinedAt: string }).JoinedAt } : null,
+      };
+    },
+  );
+
+  // Joining and leaving act on the caller's own `participant` row. Any signed-in user may join,
+  // including the swap's managers: SwapMembers is keyed (SwapId, UserId, Role).
+  app.put<{ Params: { swapId: string } }>(
+    '/api/swaps/:swapId/membership',
+    { ...auth, schema: { params: swapParamsSchema } },
+    async (req, reply) => {
+      const { swapId } = req.params;
+      const userId = req.user!.userId;
+      const result = await database.runTransactionAsync(async (tx) => {
+        const [swaps] = await tx.run({
+          sql: `SELECT CURRENT_DATE() BETWEEN SignUpOpens AND SignUpCloses AS IsOpen FROM Swaps WHERE SwapId = @swapId`,
+          params: { swapId },
+          json: true,
+        });
+        if (swaps.length === 0) {
+          await tx.rollback();
+          return 'missing' as const;
+        }
+        if (!(swaps[0] as { IsOpen: boolean }).IsOpen) {
+          await tx.rollback();
+          return 'closed' as const;
+        }
+        const [existing] = await tx.run({
+          sql: `SELECT 1 AS Ok FROM SwapMembers WHERE SwapId = @swapId AND UserId = @userId AND Role = 'participant'`,
+          params: { swapId, userId },
+          json: true,
+        });
+        if (existing.length === 0) {
+          tx.insert('SwapMembers', { SwapId: swapId, UserId: userId, Role: 'participant', CreatedAt: Spanner.COMMIT_TIMESTAMP });
+        }
+        await tx.commit();
+        return 'joined' as const;
+      });
+      if (result === 'missing') return reply.code(404).send({ error: 'That swap was not found.' });
+      if (result === 'closed') return reply.code(403).send({ error: 'Sign-up for this swap is not open.' });
+      return { joined: true };
+    },
+  );
+
+  app.delete<{ Params: { swapId: string } }>(
+    '/api/swaps/:swapId/membership',
+    { ...auth, schema: { params: swapParamsSchema } },
+    async (req, reply) => {
+      // Deleting a key that doesn't exist is a no-op, so leaving twice is fine.
+      await database.table('SwapMembers').deleteRows([[req.params.swapId, req.user!.userId, 'participant']]);
+      return reply.code(204).send();
+    },
+  );
+
+  app.get<{ Params: { swapId: string }; Querystring: { limit?: number; after?: string } }>(
+    '/api/swaps/:swapId/members',
+    {
+      ...auth,
+      schema: {
+        params: swapParamsSchema,
+        querystring: {
+          type: 'object',
+          properties: {
+            limit: { type: 'integer', minimum: 1, maximum: 500, default: 100 },
+            after: { type: 'string', maxLength: 36 },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
+      const { swapId } = req.params;
+      if (!(await getSwap(swapId))) return reply.code(404).send({ error: 'That swap was not found.' });
+      if (!(await canManage(req.user!, swapId))) {
+        return reply.code(403).send({ error: "You can't see who joined this swap." });
+      }
+      const limit = req.query.limit ?? 100;
+      // Keyset pagination on the primary key: each page is a range scan inside the swap's rows.
+      const [[rows], [counts]] = await Promise.all([
+        database.run({
+          sql: `SELECT m.UserId, u.Email, u.DisplayName, FORMAT_TIMESTAMP('%FT%TZ', m.CreatedAt) AS JoinedAt
+                FROM SwapMembers m JOIN Users u ON u.UserId = m.UserId
+                WHERE m.SwapId = @swapId AND m.Role = 'participant' AND m.UserId > @after
+                ORDER BY m.UserId
+                LIMIT @limit`,
+          params: { swapId, after: req.query.after ?? '', limit: Spanner.int(limit + 1) },
+          json: true,
+        }),
+        database.run({
+          sql: `SELECT COUNT(*) AS Total FROM SwapMembers WHERE SwapId = @swapId AND Role = 'participant'`,
+          params: { swapId },
+          json: true,
+        }),
+      ]);
+      const page = (rows as MemberRow[]).slice(0, limit);
+      return {
+        members: page.map((r) => ({
+          userId: r.UserId,
+          email: r.Email,
+          displayName: r.DisplayName,
+          joinedAt: r.JoinedAt,
+        })),
+        total: Number((counts[0] as { Total: number }).Total),
+        nextCursor: rows.length > limit ? page[page.length - 1].UserId : null,
+      };
     },
   );
 

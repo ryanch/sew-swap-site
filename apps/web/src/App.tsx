@@ -4,6 +4,7 @@ import AdminUsersPage from './pages/AdminUsersPage';
 import HomePage from './pages/HomePage';
 import LoginPage from './pages/LoginPage';
 import SwapDetailPage from './pages/SwapDetailPage';
+import SwapMembersPage from './pages/SwapMembersPage';
 import SwapFormPage from './pages/SwapFormPage';
 import SwapsPage from './pages/SwapsPage';
 import StatusPage from './pages/StatusPage';
@@ -75,6 +76,14 @@ export default function App() {
                 <RequireRole role="swap_manager">
                   <SwapFormPage />
                 </RequireRole>
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/manage/swaps/:swapId/members"
+            element={
+              <RequireAuth>
+                <SwapMembersPage />
               </RequireAuth>
             }
           />
