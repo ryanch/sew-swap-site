@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sew Swap: local dev</title>
+<style>
+  :root {
+    --bg: #faf8f5;
+    --surface: #ffffff;
+    --text: #2b2622;
+    --muted: #6b625a;
+    --border: #e6dfd6;
+    --accent: #9a4f2e;
+    --code-bg: #f3efe9;
+    --ok: #2e7d4f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1c1917;
+      --surface: #26221f;
+      --text: #f2ece4;
+      --muted: #a79d92;
+      --border: #3a342f;
+      --accent: #e09a72;
+      --code-bg: #171411;
+      --ok: #6cc08b;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1c1917;
+    --surface: #26221f;
+    --text: #f2ece4;
+    --muted: #a79d92;
+    --border: #3a342f;
+    --accent: #e09a72;
+    --code-bg: #171411;
+    --ok: #6cc08b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 1.9rem; margin: 0 0 4px; }
+  h2 { font-size: 1.2rem; margin: 0 0 12px; color: var(--accent); }
+  p, li { margin: 0 0 10px; }
+  ul { padding-left: 20px; }
+  a { color: var(--accent); }
+  .lead { color: var(--muted); margin-bottom: 24px; }
+  section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.9em;
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+  .cmd {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 10px 10px 14px;
+    margin: 10px 0;
+  }
+  .cmd pre {
+    margin: 0;
+    flex: 1;
+    overflow-x: auto;
+    font: 0.92rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  button.copy {
+    flex: none;
+    font: inherit;
+    font-size: 0.85rem;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  button.copy:hover { border-color: var(--accent); }
+  button.copy.done { color: var(--ok); border-color: var(--ok); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .note { color: var(--muted); font-size: 0.92rem; }
+  @media (max-width: 480px) {
+    .cmd { flex-direction: column; align-items: stretch; }
+    button.copy { align-self: flex-end; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Sew Swap: local dev</h1>
+  <p class="lead">React (Vite) frontend, Fastify API, Cloud Spanner emulator and Mailpit, all in Docker. The links below only work while the stack is running.</p>
+
+  <section>
+    <h2>Start the stack</h2>
+    <p>Run this from the repo root with Docker Desktop running.</p>
+    <div class="cmd">
+      <pre><code>docker compose up --build</code></pre>
+      <button class="copy" data-copy="docker compose up --build">Copy</button>
+    </div>
+    <p class="note">If Docker can't find <code>docker-credential-desktop</code>, add its folder to your PATH first:</p>
+    <div class="cmd">
+      <pre><code>export PATH="/Applications/Docker.app/Contents/Resources/bin:$PATH"</code></pre>
+      <button class="copy" data-copy='export PATH="/Applications/Docker.app/Contents/Resources/bin:$PATH"'>Copy</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Pages to open</h2>
+    <table>
+      <thead><tr><th>What</th><th>Where</th></tr></thead>
+      <tbody>
+        <tr><td>Web app</td><td><a href="http://localhost:5173">http://localhost:5173</a></td></tr>
+        <tr><td>API health check</td><td><a href="http://localhost:8080/api/health">http://localhost:8080/api/health</a></td></tr>
+        <tr><td>Mailpit inbox (sign-in emails)</td><td><a href="http://localhost:8025">http://localhost:8025</a></td></tr>
+        <tr><td>Spanner emulator</td><td><code>localhost:9010</code> (gRPC), <code>localhost:9020</code> (REST)</td></tr>
+      </tbody>
+    </table>
+    <p class="note">On startup the API creates the Spanner instance and database and applies <code>db/migrations/*.sql</code>.</p>
+  </section>
+
+  <section>
+    <h2>Sign in</h2>
+    <ul>
+      <li>Go to <a href="http://localhost:5173">localhost:5173</a> and enter any email address. The first sign-in creates the account.</li>
+      <li>The sign-in email arrives in <a href="http://localhost:8025">Mailpit</a>. It has a button and a 6-digit code. Either one signs you in.</li>
+      <li>Each link or code works once and expires after 15 minutes. At most 5 emails per address per hour in production; compose allows 50 (<code>LOGIN_REQUESTS_PER_HOUR</code>).</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Admins and roles</h2>
+    <ul>
+      <li>Emails in <code>ADMIN_EMAILS</code> become admins on sign-in. Locally the default is <code>admin@example.test</code>.</li>
+      <li>Admins open <strong>Manage user roles</strong> on the home page to grant or remove <em>Admin</em> and <em>Swap Manager</em>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Google sign-in (optional)</h2>
+    <ol>
+      <li>In the GCP console, go to <strong>APIs &amp; Services → Credentials</strong> and create an <strong>OAuth client ID</strong> of type <em>Web application</em>.</li>
+      <li>Add the authorized redirect URI <code>http://localhost:5173/api/auth/google/callback</code>.</li>
+      <li>Put <code>GOOGLE_CLIENT_ID=...</code> and <code>GOOGLE_CLIENT_SECRET=...</code> in <code>.env</code>, then run the command below.</li>
+    </ol>
+    <div class="cmd">
+      <pre><code>docker compose up -d api</code></pre>
+      <button class="copy" data-copy="docker compose up -d api">Copy</button>
+    </div>
+    <p class="note">The "Sign in with Google" button appears once both values are set. If a Google email matches an existing email-login user, it signs in to that account.</p>
+  </section>
+
+  <section>
+    <h2>Useful commands</h2>
+    <div class="cmd">
+      <pre><code>docker compose logs -f api</code></pre>
+      <button class="copy" data-copy="docker compose logs -f api">Copy</button>
+    </div>
+    <div class="cmd">
+      <pre><code>docker compose restart spanner api</code></pre>
+      <button class="copy" data-copy="docker compose restart spanner api">Copy</button>
+    </div>
+    <p class="note">Run this after changing anything in <code>db/migrations/</code>. Restarting only <code>api</code> keeps the old schema. The emulator keeps data in memory, so everything resets on restart.</p>
+    <div class="cmd">
+      <pre><code>docker compose down</code></pre>
+      <button class="copy" data-copy="docker compose down">Copy</button>
+    </div>
+    <p class="note">Hot reload: <code>apps/web/src</code> and <code>apps/api/src</code> are bind-mounted. If you change a <code>package.json</code>, rebuild with <code>docker compose up --build</code>.</p>
+  </section>
+
+  <section>
+    <h2>End-to-end tests</h2>
+    <p>Playwright tests live in <code>e2e/</code>. Start the stack first, then run:</p>
+    <div class="cmd">
+      <pre><code>docker compose --profile test run --rm --build e2e</code></pre>
+      <button class="copy" data-copy="docker compose --profile test run --rm --build e2e">Copy</button>
+    </div>
+    <p class="note">The HTML report is written to <code>e2e/playwright-report/</code>.</p>
+  </section>
+
+  <section>
+    <h2>Production images</h2>
+    <p>Each Dockerfile has a <code>dev</code> target (used by compose) and a <code>prod</code> target (for Cloud Run).</p>
+    <div class="cmd">
+      <pre><code>docker build --target prod -t sew-swap-api apps/api</code></pre>
+      <button class="copy" data-copy="docker build --target prod -t sew-swap-api apps/api">Copy</button>
+    </div>
+    <div class="cmd">
+      <pre><code>docker build --target prod -t sew-swap-web apps/web</code></pre>
+      <button class="copy" data-copy="docker build --target prod -t sew-swap-web apps/web">Copy</button>
+    </div>
+    <p class="note">The web image proxies <code>/api/*</code> to <code>$API_UPSTREAM</code>, which must be set outside compose. In production, leave out <code>SPANNER_EMULATOR_HOST</code>, set <code>APP_BASE_URL</code> to the public https URL, and set <code>AUTH_SECRET</code> from Secret Manager.</p>
+  </section>
+</main>
+
+<script>
+  document.querySelectorAll("button.copy").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var text = button.getAttribute("data-copy");
+      var label = button.textContent;
+      function done() {
+        button.textContent = "Copied";
+        button.classList.add("done");
+        setTimeout(function () {
+          button.textContent = label;
+          button.classList.remove("done");
+        }, 1500);
+      }
+      function fallback() {
+        var area = document.createElement("textarea");
+        area.value = text;
+        area.style.position = "fixed";
+        area.style.opacity = "0";
+        document.body.appendChild(area);
+        area.select();
+        try {
+          if (document.execCommand("copy")) done();
+        } catch (e) {
+          button.textContent = "Copy failed";
+        }
+        document.body.removeChild(area);
+      }
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(done, fallback);
+      } else {
+        fallback();
+      }
+    });
+  });
+</script>
+</body>
+</html>
