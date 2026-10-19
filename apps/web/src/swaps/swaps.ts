@@ -7,6 +7,8 @@ export type Swap = {
   shipBy: string;
   signUpOpens: string;
   signUpCloses: string;
+  /** When the manager published who makes for whom, or null. */
+  makersPublishedAt: string | null;
   /** How many have signed up. Only sent to the swap's managers and admins, on swap lists. */
   swapperCount?: number;
 };
@@ -30,6 +32,9 @@ export type SignUpStatus = 'upcoming' | 'open' | 'closed';
 /** Someone a member makes for, or who makes for them. */
 export type Person = { userId: string; name: string; instagramHandle: string | null };
 
+/** The other end of a pairing, and whether the maker has confirmed it. */
+export type Paired = Person & { confirmed: boolean };
+
 /** A participant as the swap's managers see them. Skill, pod and pairings are never shown to participants. */
 export type SwapMember = {
   userId: string;
@@ -44,8 +49,10 @@ export type SwapMember = {
   country: string | null;
   region: string | null;
   city: string | null;
-  makingFor: Person[];
-  madeBy: Person[];
+  makingFor: Paired[];
+  madeBy: Paired[];
+  /** The last confirmation reminder this person was sent for this swap. */
+  lastRemindedAt: string | null;
 };
 
 export type Pod = { podId: string; name: string; count: number };
@@ -70,7 +77,7 @@ export type MemberFilters = {
   country?: string;
   region?: string;
   skill?: string;
-  needs?: 'maker' | 'recipient';
+  needs?: 'maker' | 'recipient' | 'confirmation';
 };
 
 export type MembersPage = { members: SwapMember[]; total: number; nextCursor: string | null };
@@ -81,5 +88,27 @@ export function membersUrl(swapId: string, filters: MemberFilters & { after?: st
   const qs = params.toString();
   return `/api/swaps/${swapId}/members${qs ? `?${qs}` : ''}`;
 }
+
+/** An ISO timestamp as 'March 5, 2026'. */
+export const formatTimestamp = (iso: string) =>
+  new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+
+/** How many people in plain words: '1 person', '3 people'. */
+export const people = (n: number) => (n === 1 ? '1 person' : `${n} people`);
+
+/** Where a manager stands before and after publishing makers (GET …/publish). */
+export type PublishSummary = {
+  publishedAt: string | null;
+  partnersAnnounced: string;
+  participants: number;
+  withoutRecipient: number;
+  withoutMaker: number;
+  pairings: number;
+  pairingsConfirmed: number;
+  makers: number;
+  makersConfirmed: number;
+};
+
+export const MAX_REMINDERS_PER_BATCH = 50;
 
 export const instagramUrl = (handle: string) => `https://www.instagram.com/${handle}/`;

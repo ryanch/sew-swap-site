@@ -1,12 +1,14 @@
 import { useState, type FormEvent } from 'react';
-import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
+import { Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import { useAuth, type User } from '../auth/AuthContext';
+import { rememberReturnTo, takeReturnTo } from '../auth/returnTo';
 
 export default function LoginPage() {
   const { user, googleEnabled, refresh } = useAuth();
   const navigate = useNavigate();
   const [params] = useSearchParams();
+  const from = (useLocation().state as { from?: string } | null)?.from;
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
   const [step, setStep] = useState<'email' | 'code'>('email');
@@ -14,7 +16,7 @@ export default function LoginPage() {
   const [error, setError] = useState(params.get('error') === 'google' ? 'Google sign-in did not work. Please try again or use your email.' : '');
   const [resent, setResent] = useState(false);
 
-  if (user) return <Navigate to="/" replace />;
+  if (user) return <Navigate to={from ?? '/'} replace />;
 
   const requestLink = async (e?: FormEvent) => {
     e?.preventDefault();
@@ -22,6 +24,7 @@ export default function LoginPage() {
     setError('');
     try {
       await api('/api/auth/email/request', { method: 'POST', body: { email } });
+      rememberReturnTo(from);
       if (step === 'code') setResent(true);
       setStep('code');
     } catch (err) {
@@ -41,7 +44,7 @@ export default function LoginPage() {
         body: { email, code },
       });
       await refresh();
-      navigate('/', { replace: true, state: { welcome: res.isNewUser } });
+      navigate(takeReturnTo(), { replace: true, state: { welcome: res.isNewUser } });
     } catch (err) {
       setError((err as Error).message);
     } finally {

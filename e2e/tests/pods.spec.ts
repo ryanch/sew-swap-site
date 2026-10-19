@@ -220,14 +220,18 @@ test('when someone drops out, the manager sees who needs a maker and fixes it', 
   const csv = await (await admin.request.get(`/api/swaps/${swapId}/export.csv`)).text();
   const lines = csv.replace(/^﻿/, '').trim().split('\r\n');
   expect(lines[0]).toBe(
-    'Name,Email,Instagram,Instagram link,Instagram confirmed,Name on package,Address line 1,Address line 2,City,State/Region,Postal code,Country,Pod,Skill level,Making For,Making For 2,Making For 3,Making For 4,Making For 5,Made by',
+    'Name,Email,Instagram,Instagram link,Instagram confirmed,Name on package,Address line 1,Address line 2,City,State/Region,Postal code,Country,Pod,Skill level,' +
+      'Making For,Make Confirmed,Making For 2,Make 2 Confirmed,Making For 3,Make 3 Confirmed,Making For 4,Make 4 Confirmed,Making For 5,Make 5 Confirmed,Made by',
   );
   expect(lines).toHaveLength(1 + 7);
   const franRow = lines.find((l) => l.startsWith(fran.name))!.split(',');
   expect(franRow[3]).toBe(`https://www.instagram.com/${fran.handle}/`);
   expect(franRow[12]).toBe('Loop');
-  expect(franRow.slice(14, 19).filter(Boolean)).toHaveLength(2);
-  expect(franRow.slice(14, 19)).toContain(`${makers.Monica.name} (@${makers.Monica.handle})`);
+  // Columns 14-23 pair each person Fran makes for with whether that one is confirmed (not yet: nothing is published).
+  const makingFor = [14, 16, 18, 20, 22].map((i) => franRow[i]);
+  expect(makingFor.filter(Boolean)).toHaveLength(2);
+  expect(makingFor).toContain(`${makers.Monica.name} (@${makers.Monica.handle})`);
+  expect([15, 17, 19, 21, 23].map((i) => franRow[i])).toEqual(['No', 'No', '', '', '']);
 });
 
 test('auto-assign pairs a pod of two both ways', async () => {

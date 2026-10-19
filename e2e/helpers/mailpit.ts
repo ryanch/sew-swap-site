@@ -2,7 +2,7 @@ import { expect } from '@playwright/test';
 
 const MAILPIT_URL = process.env.MAILPIT_URL ?? 'http://localhost:8025';
 
-type SearchResult = { messages: { ID: string; Created: string }[] };
+type SearchResult = { messages: { ID: string; Created: string; Subject: string }[] };
 type Message = { Text: string; HTML: string; Subject: string };
 
 export type LoginEmail = { token: string; code: string; text: string };
@@ -46,4 +46,26 @@ export async function waitForLoginEmail(to: string, opts: { excludeIds?: string[
   const code = msg.Text.match(/code on the sign-in page: (\d{6})/)?.[1];
   if (!token || !code) throw new Error(`Could not parse sign-in email:\n${msg.Text}`);
   return { id, token: decodeURIComponent(token), code, text: msg.Text };
+}
+
+/** Subjects of mail sent to `to`, newest first, leaving out `excludeIds`. */
+export async function emailSubjects(to: string, opts: { excludeIds?: string[] } = {}): Promise<string[]> {
+  return (await searchByRecipient(to)).messages.filter((m) => !opts.excludeIds?.includes(m.ID)).map((m) => m.Subject);
+}
+
+/** Waits for a new email to `to` whose subject matches, and returns its text. */
+export async function waitForEmail(to: string, subject: RegExp, opts: { excludeIds?: string[] } = {}): Promise<{ id: string; text: string }> {
+  let id = '';
+  await expect
+    .poll(
+      async () => {
+        const data = await searchByRecipient(to);
+        id = data.messages.find((m) => !opts.excludeIds?.includes(m.ID) && subject.test(m.Subject))?.ID ?? '';
+        return id;
+      },
+      { message: `email to ${to} matching ${subject}`, timeout: 15_000 },
+    )
+    .not.toBe('');
+  const msg = (await (await fetch(`${MAILPIT_URL}/api/v1/message/${id}`)).json()) as Message;
+  return { id, text: msg.Text };
 }

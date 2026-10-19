@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import { useAuth, type User } from '../auth/AuthContext';
+import { takeReturnTo } from '../auth/returnTo';
 
 /**
  * Landing page for the email link. The token is redeemed with a POST from here
@@ -26,7 +27,7 @@ export default function VerifyPage() {
     api<{ user: User; isNewUser: boolean }>('/api/auth/email/verify-link', { method: 'POST', body: { token } })
       .then(async (res) => {
         await refresh();
-        navigate('/', { replace: true, state: { welcome: res.isNewUser } });
+        navigate(takeReturnTo(), { replace: true, state: { welcome: res.isNewUser } });
       })
       .catch((err: Error) => setError(err.message));
   }, [params, navigate, refresh]);

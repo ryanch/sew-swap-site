@@ -1,6 +1,6 @@
 # Sew Swap
 
-Swap site: managers create swaps with a registration form, users sign up, the manager pairs them, and partners see each other's shared info. Helpers manage "pods" in large swaps. Users aren't comfortable with technology, so notifications go by email, with an in-app log of those emails. Will deploy to **GCP Cloud Run + Cloud Spanner**.
+Swap site: managers create swaps with a registration form, users sign up, the manager pairs them, and partners see each other's shared info. Helpers manage "pods" in large swaps. Users aren't comfortable with technology, so notifications go by email, with an in-app log of those emails (`EmailLog`, shown at `/emails`). Will deploy to **GCP Cloud Run + Cloud Spanner**.
 
 ## Stack
 - `apps/api`: Node 22, Fastify, TypeScript (CommonJS), `@google-cloud/spanner`, nodemailer
@@ -67,6 +67,15 @@ Node isn't installed on the host, so run npm inside containers. If docker can't 
 - Leaving a swap deletes the person's assignments both ways; the members page's "Needs attention" filter shows the gaps.
 - `GET …/export.csv`: one row per participant, with the Instagram link, address, pod, skill, `Making For` … `Making For 5`, `Made by`. Cells are formula-guarded (`src/pods/csv.ts`).
 - Managers rate skill by looking at Instagram, so manager views always show `@handle` as a link next to the skill picker (`src/swaps/manage.tsx` in web).
+
+## Publishing makers (done)
+- `0007_publish.sql`: `Swaps.MakersPublishedAt`/`By`, `Assignments.ConfirmedAt`, and `EmailLog(UserId, EmailId, Kind, SwapId, Subject, Body)`. Routes are in `routes/makes.ts`.
+- Managers publish by hand. "Partners announced" is only a guide. The panel on the members page and swap page (`PublishPanel` in `swaps/manage.tsx`) warns if anyone is unpaired, but still allows publishing. Publishing asks twice (inline, then `confirm()`), then emails every maker. You can only publish once (409 after).
+- Before publishing, `GET /api/me/makes` and the confirm route show nothing (404), so pairings stay private.
+- Makers confirm at `/makes` by ticking three boxes, which the API checks too. The home page shows a big button when something needs confirming. `src/auth/returnTo.ts` (localStorage) sends people back to `/makes` after signing in from the email link.
+- Pairings stay editable after publishing. A new one is unconfirmed and emails the maker (`new_pairing`).
+- `needs=confirmation` lists makers with an unconfirmed pairing. `POST …/reminders` takes up to 50 `userIds` per batch and skips anyone confirmed or reminded in the last 24 hours.
+- Send notifications with `sendUserMail`. It logs to `EmailLog` as `sending`, then `sent` or `failed`. Only `sent` rows count as sent; `sending` rows still hold back repeat reminders, in case the email went out and `sendToMany` (5 at a time, before the reply, because Cloud Run throttles CPU after it). Sign-in emails aren't logged.
 
 ## Next
 - Helpers scoped to pods.

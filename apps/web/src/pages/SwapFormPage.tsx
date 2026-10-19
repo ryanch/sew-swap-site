@@ -3,7 +3,8 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api';
 import { DATE_FIELDS, type Swap } from '../swaps/swaps';
 
-type Form = Omit<Swap, 'swapId'>;
+// Only the fields the form edits: the API refuses any others.
+type Form = Omit<Swap, 'swapId' | 'makersPublishedAt' | 'swapperCount'>;
 const EMPTY: Form = {
   title: '',
   description: '',
@@ -29,7 +30,7 @@ export default function SwapFormPage() {
     // A load that finishes after cleanup (StrictMode runs effects twice) must not overwrite what was typed.
     let stale = false;
     api<{ swap: Swap; canEdit: boolean }>(`/api/swaps/${swapId}`)
-      .then(({ swap: { swapId: _id, ...rest }, canEdit }) => {
+      .then(({ swap: { swapId: _id, makersPublishedAt: _published, swapperCount: _count, ...rest }, canEdit }) => {
         if (stale) return;
         setForm(rest);
         setCanEdit(canEdit);

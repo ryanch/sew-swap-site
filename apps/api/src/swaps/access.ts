@@ -11,6 +11,7 @@ export type SwapRow = {
   ShipBy: string;
   SignUpOpens: string;
   SignUpCloses: string;
+  MakersPublishedAt: string | null;
 };
 
 // DATE columns are formatted in SQL so the API always sends YYYY-MM-DD strings.
@@ -23,7 +24,7 @@ export const SWAP_COLUMNS = `s.SwapId, s.Title, s.Description, ${[
   'SignUpCloses',
 ]
   .map(d)
-  .join(', ')}`;
+  .join(', ')}, FORMAT_TIMESTAMP('%FT%TZ', s.MakersPublishedAt) AS MakersPublishedAt`;
 
 export function toSwap(row: SwapRow) {
   return {
@@ -35,6 +36,8 @@ export function toSwap(row: SwapRow) {
     shipBy: row.ShipBy,
     signUpOpens: row.SignUpOpens,
     signUpCloses: row.SignUpCloses,
+    // Until then, nobody but the swap's managers can see who makes for whom.
+    makersPublishedAt: row.MakersPublishedAt,
   };
 }
 

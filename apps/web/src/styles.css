@@ -37,7 +37,7 @@ button, .button {
 button.secondary, .button.secondary { background: #fff; color: var(--fg); border-color: var(--border); }
 button:disabled { opacity: 0.6; cursor: default; }
 .stack > * + * { margin-top: 16px; }
-.full { width: 100%; }
+.full { width: 100%; box-sizing: border-box; }
 .error { color: var(--danger); font-weight: 600; }
 .notice { background: #dafbe1; border: 2px solid var(--accent); border-radius: 8px; padding: 12px 16px; }
 .muted { color: var(--muted); }
@@ -49,8 +49,8 @@ main.wide { max-width: 760px; }
 .user-list { list-style: none; padding: 0; margin: 0; }
 .user-row { border: 2px solid var(--border); border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; }
 .user-row .roles { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-top: 8px; }
-label.checkbox { display: flex; align-items: center; gap: 10px; margin: 0; cursor: pointer; }
-label.checkbox input { display: inline-block; width: 24px; height: 24px; margin: 0; }
+label.checkbox { display: flex; align-items: flex-start; gap: 10px; margin: 0; cursor: pointer; }
+label.checkbox input { display: inline-block; flex: none; width: 24px; height: 24px; margin: 2px 0 0; }
 textarea {
   display: block; width: 100%; box-sizing: border-box; font: inherit;
   font-size: 1.1rem; padding: 12px; border: 2px solid var(--border); border-radius: 8px; resize: vertical;
@@ -77,3 +77,6 @@ select.compact { display: inline-block; width: auto; padding: 6px 10px; font-siz
 .notice .warning { margin-top: 12px; }
 button.danger { color: var(--danger); border-color: var(--danger); }
 address.mailing { font-style: normal; }
+.big-warning { border-width: 3px; font-size: 1.15rem; }
+.confirmed { color: var(--accent); font-weight: 600; }
+.user-row h2 { font-size: 1.3rem; margin: 0; }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api';
+import { PublishPanel, usePublishSummary } from '../swaps/manage';
 import { DATE_FIELDS, formatDate, type SignUpStatus, type Swap } from '../swaps/swaps';
 
 type SwapData = {
@@ -63,6 +64,13 @@ export default function SwapDetailPage() {
           {data.membership ? (
             <>
               <p>You've joined this swap.</p>
+              {data.swap.makersPublishedAt && (
+                <p>
+                  <Link className="button" to="/makes">
+                    See who you're making for
+                  </Link>
+                </p>
+              )}
               <p>
                 {data.signUpStatus === 'open' && (
                   <>
@@ -89,6 +97,7 @@ export default function SwapDetailPage() {
                 : 'Sign-up for this swap has closed.'}
             </p>
           )}
+          {data.canEdit && <ManagerPublish swapId={data.swap.swapId} />}
           {data.canEdit && (
             <p>
               <Link className="button secondary" to={`/manage/swaps/${data.swap.swapId}/edit`}>
@@ -105,5 +114,25 @@ export default function SwapDetailPage() {
         </>
       )}
     </main>
+  );
+}
+
+/** The publish panel for the swap's managers, linking to the members page to follow up. */
+function ManagerPublish({ swapId }: { swapId: string }) {
+  const { summary, reload } = usePublishSummary(swapId);
+  if (!summary) return null;
+  return (
+    <PublishPanel
+      swapId={swapId}
+      summary={summary}
+      onPublished={reload}
+      pendingAction={
+        <p>
+          <Link className="button secondary" to={`/manage/swaps/${swapId}/members?needs=confirmation`}>
+            Show who hasn't confirmed
+          </Link>
+        </p>
+      }
+    />
   );
 }

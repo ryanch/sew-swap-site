@@ -1,8 +1,10 @@
 import { BrowserRouter, Route, Routes } from 'react-router-dom';
 import { AuthProvider, RequireAuth, RequireRole } from './auth/AuthContext';
 import AdminUsersPage from './pages/AdminUsersPage';
+import EmailsPage from './pages/EmailsPage';
 import HomePage from './pages/HomePage';
 import LoginPage from './pages/LoginPage';
+import MakesPage from './pages/MakesPage';
 import PodPage from './pages/PodPage';
 import SwapDetailPage from './pages/SwapDetailPage';
 import SwapJoinPage from './pages/SwapJoinPage';
@@ -24,6 +26,22 @@ export default function App() {
             element={
               <RequireAuth>
                 <HomePage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/makes"
+            element={
+              <RequireAuth>
+                <MakesPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/emails"
+            element={
+              <RequireAuth>
+                <EmailsPage />
               </RequireAuth>
             }
           />

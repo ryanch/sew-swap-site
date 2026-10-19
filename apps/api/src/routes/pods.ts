@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { Spanner, type Database, type Transaction } from '@google-cloud/spanner';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { requireAuth } from '../auth/plugin';
+import { config } from '../config';
 import { database } from '../db/spanner';
+import { sendUserMail } from '../email/mailer';
+import { newPairingEmail } from '../email/templates';
 import { toCsv } from '../pods/csv';
 import { planLoop, type Edge } from '../pods/loop';
 import { planSplit } from '../pods/split';
@@ -19,7 +22,7 @@ export const MAX_RECIPIENTS = 5;
 const DEFAULT_POD = 'default';
 const DEFAULT_POD_NAME = 'Default';
 
-const NAME_SQL = `COALESCE(NULLIF(u.DisplayName, ''), NULLIF(p.RecipientName, ''), u.Email)`;
+export const NAME_SQL = `COALESCE(NULLIF(u.DisplayName, ''), NULLIF(p.RecipientName, ''), u.Email)`;
 
 type MemberRow = {
   UserId: string;
@@ -39,9 +42,12 @@ type MemberRow = {
   Region: string | null;
   PostalCode: string | null;
   Country: string | null;
+  LastRemindedAt: string | null;
 };
 
 type Person = { userId: string; name: string; instagramHandle: string | null };
+/** Someone on the other end of a pairing. `confirmed` is whether the maker has confirmed it. */
+type Paired = Person & { confirmed: boolean };
 
 export type MemberFilters = {
   userId?: string;
@@ -51,7 +57,7 @@ export type MemberFilters = {
   country?: string;
   region?: string;
   skill?: string;
-  needs?: 'maker' | 'recipient';
+  needs?: 'maker' | 'recipient' | 'confirmation';
 };
 
 const filterProperties = {
@@ -61,7 +67,7 @@ const filterProperties = {
   country: { type: 'string', maxLength: 2 },
   region: { type: 'string', maxLength: 100 },
   skill: { type: 'string', enum: ['1', '2', '3', '4', '5', 'none'] },
-  needs: { type: 'string', enum: ['maker', 'recipient'] },
+  needs: { type: 'string', enum: ['maker', 'recipient', 'confirmation'] },
 } as const;
 
 const likeEscape = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
@@ -104,6 +110,8 @@ function memberWhere(swapId: string, f: MemberFilters) {
     where.push('NOT EXISTS (SELECT 1 FROM Assignments a WHERE a.SwapId = m.SwapId AND a.RecipientId = m.UserId)');
   } else if (f.needs === 'recipient') {
     where.push('NOT EXISTS (SELECT 1 FROM Assignments a WHERE a.SwapId = m.SwapId AND a.MakerId = m.UserId)');
+  } else if (f.needs === 'confirmation') {
+    where.push('EXISTS (SELECT 1 FROM Assignments a WHERE a.SwapId = m.SwapId AND a.MakerId = m.UserId AND a.ConfirmedAt IS NULL)');
   }
   return { sql: where.join(' AND '), params };
 }
@@ -124,7 +132,10 @@ async function queryMembers(
       sql: `SELECT m.UserId, u.Email, u.DisplayName, ${NAME_SQL} AS Name,
                    FORMAT_TIMESTAMP('%FT%TZ', m.CreatedAt) AS JoinedAt,
                    p.InstagramHandle, p.InstagramStatus, m.SkillLevel, m.PodId, pd.Name AS PodName,
-                   p.RecipientName, p.AddressLine1, p.AddressLine2, p.City, p.Region, p.PostalCode, p.Country
+                   p.RecipientName, p.AddressLine1, p.AddressLine2, p.City, p.Region, p.PostalCode, p.Country,
+                   (SELECT FORMAT_TIMESTAMP('%FT%TZ', MAX(e.SentAt)) FROM EmailLog e
+                    WHERE e.SwapId = m.SwapId AND e.Kind = 'confirm_reminder' AND e.UserId = m.UserId
+                      AND e.Status = 'sent') AS LastRemindedAt
             ${MEMBER_FROM}
             WHERE ${where.sql} AND m.UserId > @after
             ORDER BY m.UserId
@@ -132,34 +143,41 @@ async function queryMembers(
       params: { ...where.params, after: page.after ?? '', limit: Spanner.int(page.limit + 1) },
       json: true,
     });
-  const [counts] = await runner.run({ sql: `SELECT COUNT(*) AS Total ${MEMBER_FROM} WHERE ${where.sql}`, params: where.params, json: true });
   const list = (rows as MemberRow[]).slice(0, page.limit);
   return {
     rows: list,
-    total: Number((counts[0] as { Total: number }).Total),
+    total: await countMembers(runner, swapId, f),
     nextCursor: rows.length > page.limit ? list[list.length - 1].UserId : null,
   };
 }
 
+/** How many participants of the swap match `f`. */
+export async function countMembers(runner: Database | Transaction, swapId: string, f: MemberFilters) {
+  const where = memberWhere(swapId, f);
+  const [counts] = await runner.run({ sql: `SELECT COUNT(*) AS Total ${MEMBER_FROM} WHERE ${where.sql}`, params: where.params, json: true });
+  return Number((counts[0] as { Total: number }).Total);
+}
+
 /** Who each of `userIds` makes for and who makes for them, with names and Instagram for display. */
 async function pairingsFor(runner: Database | Transaction, swapId: string, userIds: string[]) {
-  const makingFor = new Map<string, Person[]>();
-  const madeBy = new Map<string, Person[]>();
+  const makingFor = new Map<string, Paired[]>();
+  const madeBy = new Map<string, Paired[]>();
   if (userIds.length === 0) return { makingFor, madeBy };
   const [rows] = await runner.run({
-    sql: `SELECT MakerId, RecipientId FROM Assignments
+    sql: `SELECT MakerId, RecipientId, ConfirmedAt IS NOT NULL AS Confirmed FROM Assignments
           WHERE SwapId = @swapId AND (MakerId IN UNNEST(@ids) OR RecipientId IN UNNEST(@ids))`,
     params: { swapId, ids: userIds },
     json: true,
   });
-  const pairs = rows as { MakerId: string; RecipientId: string }[];
+  const pairs = rows as { MakerId: string; RecipientId: string; Confirmed: boolean }[];
   if (pairs.length === 0) return { makingFor, madeBy };
   const people = await lookupPeople(runner, [...new Set(pairs.flatMap((r) => [r.MakerId, r.RecipientId]))]);
-  const add = (map: Map<string, Person[]>, key: string, other: string) => map.set(key, [...(map.get(key) ?? []), people.get(other)!]);
+  const add = (map: Map<string, Paired[]>, key: string, other: string, confirmed: boolean) =>
+    map.set(key, [...(map.get(key) ?? []), { ...people.get(other)!, confirmed }]);
   const ids = new Set(userIds);
   for (const r of pairs) {
-    if (ids.has(r.MakerId)) add(makingFor, r.MakerId, r.RecipientId);
-    if (ids.has(r.RecipientId)) add(madeBy, r.RecipientId, r.MakerId);
+    if (ids.has(r.MakerId)) add(makingFor, r.MakerId, r.RecipientId, r.Confirmed);
+    if (ids.has(r.RecipientId)) add(madeBy, r.RecipientId, r.MakerId, r.Confirmed);
   }
   for (const list of [...makingFor.values(), ...madeBy.values()]) list.sort((x, y) => x.name.localeCompare(y.name));
   return { makingFor, madeBy };
@@ -197,6 +215,7 @@ function toMember(r: MemberRow, pairs: Awaited<ReturnType<typeof pairingsFor>>) 
     city: r.City,
     makingFor: pairs.makingFor.get(r.UserId) ?? [],
     madeBy: pairs.madeBy.get(r.UserId) ?? [],
+    lastRemindedAt: r.LastRemindedAt,
   };
 }
 
@@ -209,7 +228,7 @@ const withParams = (...names: string[]) =>
   }) as const;
 
 /** 404/403 guard shared by every route here. Returns true when the reply has been sent. */
-async function refuse(req: FastifyRequest<{ Params: { swapId: string } }>, reply: FastifyReply) {
+export async function refuse(req: FastifyRequest<{ Params: { swapId: string } }>, reply: FastifyReply) {
   if (!(await getSwap(req.params.swapId))) {
     reply.code(404).send({ error: 'That swap was not found.' });
     return true;
@@ -594,7 +613,7 @@ export async function podRoutes(app: FastifyInstance) {
           json: true,
         });
         const recipients = (current as { RecipientId: string }[]).map((r) => r.RecipientId);
-        if (recipients.includes(recipientId)) return true;
+        if (recipients.includes(recipientId)) return 'existing' as const;
         if (recipients.length >= MAX_RECIPIENTS) {
           const maker = (await lookupPeople(tx, [makerId])).get(makerId)!;
           throw new Problem(`${maker.name} already makes for ${MAX_RECIPIENTS} people.`);
@@ -606,9 +625,21 @@ export async function podRoutes(app: FastifyInstance) {
           CreatedBy: userId,
           CreatedAt: Spanner.COMMIT_TIMESTAMP,
         });
-        return true;
+        return 'added' as const;
       });
-      return done && { assigned: true };
+      if (!done) return reply;
+      // Once makers are published, a new pairing needs confirming like the rest, so tell the maker.
+      const swap = (await getSwap(swapId))!;
+      if (done === 'added' && swap.makersPublishedAt) {
+        const [users] = await database.run({ sql: `SELECT Email FROM Users WHERE UserId = @makerId`, params: { makerId }, json: true });
+        const email = (users[0] as { Email: string } | undefined)?.Email;
+        try {
+          if (email) await sendUserMail({ userId: makerId, email }, 'new_pairing', swapId, newPairingEmail(swap, config.appBaseUrl));
+        } catch (err) {
+          req.log.error({ err, makerId }, 'Could not send new pairing email');
+        }
+      }
+      return { assigned: true };
     },
   );
 
@@ -646,8 +677,11 @@ export async function podRoutes(app: FastifyInstance) {
         [
           'Name', 'Email', 'Instagram', 'Instagram link', 'Instagram confirmed', 'Name on package',
           'Address line 1', 'Address line 2', 'City', 'State/Region', 'Postal code', 'Country',
-          'Pod', 'Skill level', 'Making For',
-          ...Array.from({ length: MAX_RECIPIENTS - 1 }, (_, i) => `Making For ${i + 2}`),
+          'Pod', 'Skill level',
+          // Each person they make for, followed by whether the maker has confirmed that one.
+          ...Array.from({ length: MAX_RECIPIENTS }, (_, i) =>
+            i === 0 ? ['Making For', 'Make Confirmed'] : [`Making For ${i + 1}`, `Make ${i + 1} Confirmed`],
+          ).flat(),
           'Made by',
         ],
         ...members.map((m) => {
@@ -667,7 +701,10 @@ export async function podRoutes(app: FastifyInstance) {
             r.Country,
             m.pod.name,
             m.skillLevel,
-            ...Array.from({ length: MAX_RECIPIENTS }, (_, i) => (m.makingFor[i] ? label(m.makingFor[i]) : '')),
+            ...Array.from({ length: MAX_RECIPIENTS }, (_, i) => {
+              const p = m.makingFor[i];
+              return p ? [label(p), p.confirmed ? 'Yes' : 'No'] : ['', ''];
+            }).flat(),
             m.madeBy.map(label).join('; '),
           ];
         }),

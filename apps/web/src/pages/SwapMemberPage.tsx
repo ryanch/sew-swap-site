@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api';
-import { COUNTRIES, type Address } from '../swaps/address';
+import type { Address } from '../swaps/address';
+import { MailingAddress } from '../swaps/MailingAddress';
 import { InstagramLink, memberPath, PersonPicker, SkillSelect } from '../swaps/manage';
 import { MAX_RECIPIENTS, type Person, type Pod, type SwapMember } from '../swaps/swaps';
 
@@ -46,7 +47,6 @@ export default function SwapMemberPage() {
   const movePod = (podId: string) =>
     change(() => api(`/api/swaps/${swapId}/pods/${podId}/members`, { method: 'PUT', body: { userIds: [userId] } }));
 
-  const country = member?.address && COUNTRIES.find(([code]) => code === member.address!.country)?.[1];
 
   return (
     <main className="stack wide">
@@ -79,21 +79,7 @@ export default function SwapMemberPage() {
           {member.address && (
             <section>
               <h2>Mailing address</h2>
-              <address className="mailing">
-                {member.address.name}
-                <br />
-                {member.address.line1}
-                {member.address.line2 && (
-                  <>
-                    <br />
-                    {member.address.line2}
-                  </>
-                )}
-                <br />
-                {[member.address.city, member.address.region, member.address.postalCode].filter(Boolean).join(' ')}
-                <br />
-                {country ?? member.address.country}
-              </address>
+              <MailingAddress address={member.address} />
             </section>
           )}
 
