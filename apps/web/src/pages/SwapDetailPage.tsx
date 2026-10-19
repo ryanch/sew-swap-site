@@ -25,11 +25,11 @@ export default function SwapDetailPage() {
     load();
   }, [swapId]);
 
-  async function changeMembership(method: 'PUT' | 'DELETE') {
+  async function leave() {
     setBusy(true);
     setError('');
     try {
-      await api(`/api/swaps/${swapId}/membership`, { method });
+      await api(`/api/swaps/${swapId}/membership`, { method: 'DELETE' });
       await load();
     } catch (e) {
       setError((e as Error).message);
@@ -64,16 +64,23 @@ export default function SwapDetailPage() {
             <>
               <p>You've joined this swap.</p>
               <p>
-                <button className="secondary" disabled={busy} onClick={() => changeMembership('DELETE')}>
+                {data.signUpStatus === 'open' && (
+                  <>
+                    <Link className="button secondary" to={`/swaps/${data.swap.swapId}/join`}>
+                      Change my details
+                    </Link>{' '}
+                  </>
+                )}
+                <button className="secondary" disabled={busy} onClick={leave}>
                   Leave this swap
                 </button>
               </p>
             </>
           ) : data.signUpStatus === 'open' ? (
             <p>
-              <button disabled={busy} onClick={() => changeMembership('PUT')}>
+              <Link className="button" to={`/swaps/${data.swap.swapId}/join`}>
                 Join this swap
-              </button>
+              </Link>
             </p>
           ) : (
             <p className="muted">

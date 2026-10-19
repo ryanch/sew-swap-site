@@ -17,7 +17,18 @@ input {
   display: block; width: 100%; box-sizing: border-box;
   font-size: 1.1rem; padding: 12px; border: 2px solid var(--border); border-radius: 8px;
 }
-input:focus { outline: 3px solid #0969da55; border-color: #0969da; }
+input:focus, select:focus { outline: 3px solid #0969da55; border-color: #0969da; }
+select {
+  display: block; width: 100%; box-sizing: border-box; font: inherit; background: #fff;
+  font-size: 1.1rem; padding: 12px; border: 2px solid var(--border); border-radius: 8px;
+}
+fieldset { border: 2px solid var(--border); border-radius: 8px; padding: 16px; margin-left: 0; margin-right: 0; }
+legend { font-weight: 700; font-size: 1.2rem; padding: 0 6px; }
+.warning { background: #fff8c5; border: 2px solid #d4a72c; border-radius: 8px; padding: 12px 16px; }
+.warning p { margin: 0 0 8px; }
+.warning ul { margin: 0 0 8px; padding-left: 20px; }
+.badge { display: inline-block; background: #fff8c5; border: 1px solid #d4a72c; border-radius: 999px; padding: 0 10px; font-size: 0.85rem; }
+.row button { white-space: nowrap; }
 button, .button {
   display: inline-block; font-size: 1.1rem; padding: 12px 20px; border-radius: 8px;
   border: 2px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer;

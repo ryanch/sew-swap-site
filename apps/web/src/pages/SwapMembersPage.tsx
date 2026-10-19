@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api';
-import { formatDate, type SwapMember } from '../swaps/swaps';
+import { formatDate, instagramUrl, type SwapMember } from '../swaps/swaps';
 
 type Page = { members: SwapMember[]; total: number; nextCursor: string | null };
 
@@ -45,6 +45,20 @@ export default function SwapMembersPage() {
               <strong>{m.displayName || m.email}</strong>
               <div className="muted small">
                 {m.email} · joined {formatDate(m.joinedAt.slice(0, 10))}
+              </div>
+              <div className="small">
+                {m.instagramHandle ? (
+                  <a href={instagramUrl(m.instagramHandle)} target="_blank" rel="noreferrer">
+                    @{m.instagramHandle}
+                  </a>
+                ) : (
+                  'No Instagram'
+                )}{' '}
+                {!m.instagramConfirmed && (
+                  <span className="badge" title="We couldn't confirm this Instagram account is public">
+                    Instagram unconfirmed
+                  </span>
+                )}
               </div>
             </div>
           </li>

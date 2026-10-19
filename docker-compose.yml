@@ -45,6 +45,10 @@ services:
       ADMIN_EMAILS: ${ADMIN_EMAILS:-admin@example.test}
       # Higher than the production default (5) so repeated e2e runs don't lock out the admin account.
       LOGIN_REQUESTS_PER_HOUR: ${LOGIN_REQUESTS_PER_HOUR:-50}
+      # Never call Instagram locally: the handle's prefix picks the answer (see src/instagram/strategies.ts).
+      INSTAGRAM_CHECK_STRATEGIES: ${INSTAGRAM_CHECK_STRATEGIES:-fake}
+      # Shorter than the production default (10) so e2e doesn't wait between checks.
+      INSTAGRAM_CHECK_MIN_SECONDS: ${INSTAGRAM_CHECK_MIN_SECONDS:-2}
     volumes:
       - ./apps/api/src:/app/src
       - ./db/migrations:/migrations:ro

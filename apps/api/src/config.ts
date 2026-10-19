@@ -38,6 +38,17 @@ export const config = {
     maxCodeAttempts: 5,
     cookieSecure: appBaseUrl.startsWith('https://'),
   },
+  instagram: {
+    // Tried in order; see src/instagram/strategies.ts. `fake` is for local development only.
+    strategies: (process.env.INSTAGRAM_CHECK_STRATEGIES ?? 'webProfileInfo,crawlerPage')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+    minSecondsBetweenChecks: Number(process.env.INSTAGRAM_CHECK_MIN_SECONDS ?? 10),
+    maxChecksPerHour: 15,
+    // A passing check counts for joining swaps for this long.
+    checkValidDays: 30,
+  },
   google: {
     enabled: Boolean(googleClientId && googleClientSecret),
     clientId: googleClientId,

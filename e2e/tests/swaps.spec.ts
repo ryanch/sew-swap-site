@@ -1,6 +1,7 @@
 import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import { currentUser, signIn } from '../helpers/auth';
 import { uniqueEmail } from '../helpers/mailpit';
+import { joinSwap, joinThroughPage } from '../helpers/signup';
 
 const ADMIN_EMAIL = 'admin@example.test';
 
@@ -79,7 +80,7 @@ test('swap managers create and edit swaps, and users browse them', async ({ brow
   await plain.page.getByRole('listitem', { name: title }).getByRole('link', { name: 'View details' }).click();
   await expect(plain.page.getByRole('heading', { name: title })).toBeVisible();
   await expect(plain.page.getByText('December 15, 2099')).toBeVisible();
-  await expect(plain.page.getByRole('button', { name: 'Join this swap' })).toHaveCount(0);
+  await expect(plain.page.getByRole('link', { name: 'Join this swap' })).toHaveCount(0);
   await expect(plain.page.getByText('Sign-up opens on November 1, 2099.')).toBeVisible();
   await expect(plain.page.getByRole('link', { name: 'Edit this swap' })).toHaveCount(0);
   expect((await plain.page.request.put(`/api/swaps/${swapId}`, { data: swapBody('Hijack') })).status()).toBe(403);
@@ -145,15 +146,13 @@ test('users join and leave a swap while sign-up is open', async ({ browser }) =>
   const closedId = await create(swapWithWindow(`Closed ${Date.now()}`, -9, -2));
 
   // Join through the page, then leave.
-  await joiner.page.goto(`/swaps/${openId}`);
-  await joiner.page.getByRole('button', { name: 'Join this swap' }).click();
-  await expect(joiner.page.getByText("You've joined this swap.")).toBeVisible();
+  await joinThroughPage(joiner.page, openId);
   await joiner.page.reload();
   await expect(joiner.page.getByRole('button', { name: 'Leave this swap' })).toBeVisible();
 
   // Joining twice doesn't add a second row.
-  expect((await joiner.page.request.put(`/api/swaps/${openId}/membership`)).status()).toBe(200);
-  expect((await second.page.request.put(`/api/swaps/${openId}/membership`)).status()).toBe(200);
+  expect((await joinSwap(joiner.page, openId)).status()).toBe(200);
+  expect((await joinSwap(second.page, openId)).status()).toBe(200);
   const listed = await members(mgr.page, openId);
   expect(listed.body.total).toBe(2);
   expect(listed.body.members.map((m: { email: string }) => m.email).sort()).toEqual([joiner.email, second.email].sort());
@@ -174,7 +173,7 @@ test('users join and leave a swap while sign-up is open', async ({ browser }) =>
 
   // Leaving removes them (twice is fine) and the page offers Join again.
   await joiner.page.getByRole('button', { name: 'Leave this swap' }).click();
-  await expect(joiner.page.getByRole('button', { name: 'Join this swap' })).toBeVisible();
+  await expect(joiner.page.getByRole('link', { name: 'Join this swap' })).toBeVisible();
   expect((await joiner.page.request.delete(`/api/swaps/${openId}/membership`)).status()).toBe(204);
   expect((await members(mgr.page, openId)).body.total).toBe(1);
 
@@ -185,7 +184,7 @@ test('users join and leave a swap while sign-up is open', async ({ browser }) =>
   await joiner.page.goto(`/swaps/${closedId}`);
   await expect(joiner.page.getByText('Sign-up for this swap has closed.')).toBeVisible();
   await joiner.page.goto(`/swaps/${upcomingId}`);
-  await expect(joiner.page.getByRole('button', { name: 'Join this swap' })).toHaveCount(0);
+  await expect(joiner.page.getByRole('link', { name: 'Join this swap' })).toHaveCount(0);
 
   for (const u of [mgr, joiner, second]) await u.context.close();
 });
@@ -198,11 +197,9 @@ test('any signed-in user can join a swap, including its manager and admins', asy
   const swapId = (await (await mgr.page.request.post('/api/swaps', { data: swapWithWindow(title, -1, 5) })).json()).swap.swapId;
 
   // A plain user, the swap's own manager, and an admin all join.
-  expect((await plain.page.request.put(`/api/swaps/${swapId}/membership`)).status()).toBe(200);
-  await mgr.page.goto(`/swaps/${swapId}`);
-  await mgr.page.getByRole('button', { name: 'Join this swap' }).click();
-  await expect(mgr.page.getByText("You've joined this swap.")).toBeVisible();
-  expect((await admin.request.put(`/api/swaps/${swapId}/membership`)).status()).toBe(200);
+  expect((await joinSwap(plain.page, swapId)).status()).toBe(200);
+  await joinThroughPage(mgr.page, swapId);
+  expect((await joinSwap(admin, swapId)).status()).toBe(200);
 
   const listed = await members(mgr.page, swapId);
   expect(listed.body.members.map((m: { email: string }) => m.email).sort()).toEqual([ADMIN_EMAIL, mgr.email, plain.email].sort());
@@ -217,10 +214,52 @@ test('any signed-in user can join a swap, including its manager and admins', asy
   // Leaving drops only the participant row: the manager keeps managing, and the admin is unaffected.
   await mgr.page.goto(`/swaps/${swapId}`);
   await mgr.page.getByRole('button', { name: 'Leave this swap' }).click();
-  await expect(mgr.page.getByRole('button', { name: 'Join this swap' })).toBeVisible();
+  await expect(mgr.page.getByRole('link', { name: 'Join this swap' })).toBeVisible();
   await expect(mgr.page.getByRole('link', { name: 'Edit this swap' })).toBeVisible();
   expect((await members(mgr.page, swapId)).body.total).toBe(2);
   await admin.request.delete(`/api/swaps/${swapId}/membership`);
+
+  for (const u of [mgr, plain]) await u.context.close();
+});
+
+test('the home page shows "Swaps You\'ve Joined" and "Swaps You Own" only when they have swaps', async ({ browser }) => {
+  const mgr = await newSignedInUser(browser, 'homemgr');
+  const plain = await newSignedInUser(browser, 'homeplain');
+  await makeSwapManager(mgr.email);
+  const title = `Home ${Date.now()}`;
+  const swapId = (await (await mgr.page.request.post('/api/swaps', { data: swapWithWindow(title, -1, 5) })).json()).swap.swapId;
+
+  const joinedHeading = plain.page.getByRole('heading', { name: "Swaps You've Joined" });
+  const ownHeading = (p: Page) => p.getByRole('heading', { name: 'Swaps You Own' });
+
+  // A new user has neither section.
+  await plain.page.goto('/');
+  await expect(plain.page.getByRole('heading', { name: /^Hello, / })).toBeVisible();
+  await expect(joinedHeading).toHaveCount(0);
+  await expect(ownHeading(plain.page)).toHaveCount(0);
+
+  // Joining adds the joined section only.
+  expect((await joinSwap(plain.page, swapId)).status()).toBe(200);
+  await plain.page.goto('/');
+  await expect(joinedHeading).toBeVisible();
+  await expect(plain.page.getByRole('listitem', { name: `Swaps You've Joined: ${title}` })).toBeVisible();
+  await expect(ownHeading(plain.page)).toHaveCount(0);
+
+  // The owner sees "Swaps You Own" but no joined section until they join their own swap.
+  await mgr.page.goto('/');
+  await expect(ownHeading(mgr.page)).toBeVisible();
+  await expect(mgr.page.getByRole('listitem', { name: `Swaps You Own: ${title}` })).toBeVisible();
+  await expect(mgr.page.getByRole('heading', { name: "Swaps You've Joined" })).toHaveCount(0);
+  expect((await joinSwap(mgr.page, swapId)).status()).toBe(200);
+  await mgr.page.goto('/');
+  await expect(mgr.page.getByRole('heading', { name: "Swaps You've Joined" })).toBeVisible();
+  await expect(ownHeading(mgr.page)).toBeVisible();
+
+  // Leaving hides the joined section again.
+  expect((await plain.page.request.delete(`/api/swaps/${swapId}/membership`)).status()).toBe(204);
+  await plain.page.goto('/');
+  await expect(plain.page.getByRole('heading', { name: /^Hello, / })).toBeVisible();
+  await expect(joinedHeading).toHaveCount(0);
 
   for (const u of [mgr, plain]) await u.context.close();
 });

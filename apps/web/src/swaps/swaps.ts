@@ -25,4 +25,13 @@ export const DATE_FIELDS = [
 
 export type SignUpStatus = 'upcoming' | 'open' | 'closed';
 
-export type SwapMember = { userId: string; email: string; displayName: string | null; joinedAt: string };
+export type SwapMember = {
+  userId: string;
+  email: string;
+  displayName: string | null;
+  joinedAt: string;
+  instagramHandle: string | null;
+  instagramConfirmed: boolean;
+};
+
+export const instagramUrl = (handle: string) => `https://www.instagram.com/${handle}/`;

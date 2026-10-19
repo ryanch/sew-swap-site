@@ -48,6 +48,14 @@ Node isn't installed on the host, so run npm inside containers. If docker can't 
 - `GET /api/swaps/:swapId/members` (managers and admins) lists participants with keyset pagination on `UserId` (`limit`, `after`, returns `nextCursor` and `total`). The UI is `/manage/swaps/:swapId/members`.
 - e2e swaps that must stay "not open" use 2099 dates; tests that need an open swap compute dates from today.
 
+## Swap sign-up (done)
+- Joining is a form at `/swaps/:swapId/join`: the account email (read-only, already verified by sign-in), a mailing address, and an Instagram name. Saved per user in `UserProfiles` (`0005_signup.sql`) and prefilled next time.
+- `PUT …/membership` takes `{ address, instagramPublicConfirmed? }`. It answers 404/403 for missing or closed swaps before looking at the body, then needs a valid address (`src/profile/address.ts`: US state + ZIP, Canadian province + postal code, free text elsewhere) and a passing Instagram check from the last 30 days.
+- `POST /api/me/instagram/check` cleans the input (`src/instagram/handle.ts`: `@John`, `instagram.com/john/` → `john`) and runs the strategies in `INSTAGRAM_CHECK_STRATEGIES` in order (`src/instagram/strategies.ts`). Results: `public`, `private` and `not_found` are decisive; `exists` and `unknown` let the person join if they tick "my account is public", and managers see "Instagram unconfirmed". A failed check clears the saved handle.
+- Instagram breaks these often. In Oct 2026 `webProfileInfo` was refused (401) and `crawlerPage` could tell real accounts from missing ones but not public from private. `InstagramChecks.Strategy` records which strategy decided each check. To add an approach, add an `InstagramStrategy` and list it in the env var.
+- Checks are rate limited per user (`INSTAGRAM_CHECK_MIN_SECONDS` apart, 15 per hour) and the button counts down. Compose uses the `fake` strategy (prefixes `private`, `nosuch`, `exists`, `unknown`; anything else is public) and a 2-second gap.
+- Unit tests: `docker compose exec api npx tsx --test src/**/*.test.ts`.
+
 ## Next
 - The manager pairing participants.
 - Pods (a loop of makers; hidden from participants, and they set a helper's scope).

@@ -5,6 +5,8 @@ import { requireAuth } from '../auth/plugin';
 import { hasRole, requireRole } from '../auth/roles';
 import type { AuthUser } from '../auth/users';
 import { database } from '../db/spanner';
+import { validateAddress } from '../profile/address';
+import { addressColumns, readProfile } from './profile';
 
 type SwapRow = {
   SwapId: string;
@@ -42,7 +44,16 @@ function toSwap(row: SwapRow) {
   };
 }
 
-type MemberRow = { UserId: string; Email: string; DisplayName: string | null; JoinedAt: string };
+type MemberRow = {
+  UserId: string;
+  Email: string;
+  DisplayName: string | null;
+  JoinedAt: string;
+  InstagramHandle: string | null;
+  InstagramStatus: string | null;
+};
+
+type JoinBody = { address?: unknown; instagramPublicConfirmed?: boolean } | undefined;
 
 async function getSwap(swapId: string) {
   const [rows] = await database.run({
@@ -127,6 +138,22 @@ export async function swapRoutes(app: FastifyInstance) {
     return { swaps: (rows as SwapRow[]).map(toSwap) };
   });
 
+  // For the home page: swaps the caller joined as a participant, and swaps they own as a manager.
+  app.get('/api/me/swaps', auth, async (req) => {
+    const run = async (role: string) => {
+      const [rows] = await database.run({
+        sql: `SELECT ${SWAP_COLUMNS} FROM SwapMembers m JOIN Swaps s ON s.SwapId = m.SwapId
+              WHERE m.UserId = @userId AND m.Role = @role
+              ORDER BY s.SignUpOpens DESC, s.Title`,
+        params: { userId: req.user!.userId, role },
+        json: true,
+      });
+      return (rows as SwapRow[]).map(toSwap);
+    };
+    const [joined, owned] = await Promise.all([run('participant'), run('manager')]);
+    return { joined, owned };
+  });
+
   app.get('/api/swaps/mine', manager, async (req) => {
     const all = hasRole(req.user, 'admin');
     const [rows] = await database.run({
@@ -174,12 +201,17 @@ export async function swapRoutes(app: FastifyInstance) {
 
   // Joining and leaving act on the caller's own `participant` row. Any signed-in user may join,
   // including the swap's managers: SwapMembers is keyed (SwapId, UserId, Role).
-  app.put<{ Params: { swapId: string } }>(
+  // Joining needs a mailing address (saved to UserProfiles) and a recent passing Instagram check
+  // from POST /api/me/instagram/check. If that check couldn't confirm the account is public, the
+  // person must say it is (`instagramPublicConfirmed`), and managers see it flagged.
+  // The body is checked in the handler so a closed swap answers 403 whatever was sent.
+  app.put<{ Params: { swapId: string }; Body: JoinBody }>(
     '/api/swaps/:swapId/membership',
     { ...auth, schema: { params: swapParamsSchema } },
     async (req, reply) => {
       const { swapId } = req.params;
       const userId = req.user!.userId;
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
       const result = await database.runTransactionAsync(async (tx) => {
         const [swaps] = await tx.run({
           sql: `SELECT CURRENT_DATE() BETWEEN SignUpOpens AND SignUpCloses AS IsOpen FROM Swaps WHERE SwapId = @swapId`,
@@ -194,19 +226,44 @@ export async function swapRoutes(app: FastifyInstance) {
           await tx.rollback();
           return 'closed' as const;
         }
+        const checked = validateAddress(body.address);
+        if ('error' in checked) {
+          await tx.rollback();
+          return { problem: checked.error };
+        }
+        const profile = await readProfile(tx, userId);
+        if (!profile?.InstagramStatus) {
+          await tx.rollback();
+          return { problem: 'Please check your Instagram name before joining.' };
+        }
+        if (!profile.InstagramFresh) {
+          await tx.rollback();
+          return { problem: 'Please check your Instagram name again before joining.' };
+        }
+        const isPublic = profile.InstagramStatus === 'public';
+        if (!isPublic && body.instagramPublicConfirmed !== true) {
+          await tx.rollback();
+          return { problem: "We couldn't confirm your Instagram is public. Please tick the box to say it is." };
+        }
+
+        tx.upsert('UserProfiles', { UserId: userId, ...addressColumns(checked.address), UpdatedAt: Spanner.COMMIT_TIMESTAMP });
         const [existing] = await tx.run({
           sql: `SELECT 1 AS Ok FROM SwapMembers WHERE SwapId = @swapId AND UserId = @userId AND Role = 'participant'`,
           params: { swapId, userId },
           json: true,
         });
+        const member = { SwapId: swapId, UserId: userId, Role: 'participant', InstagramPublicConfirmed: isPublic ? null : true };
         if (existing.length === 0) {
-          tx.insert('SwapMembers', { SwapId: swapId, UserId: userId, Role: 'participant', CreatedAt: Spanner.COMMIT_TIMESTAMP });
+          tx.insert('SwapMembers', { ...member, CreatedAt: Spanner.COMMIT_TIMESTAMP });
+        } else {
+          tx.update('SwapMembers', member);
         }
         await tx.commit();
         return 'joined' as const;
       });
       if (result === 'missing') return reply.code(404).send({ error: 'That swap was not found.' });
       if (result === 'closed') return reply.code(403).send({ error: 'Sign-up for this swap is not open.' });
+      if (typeof result === 'object') return reply.code(400).send({ error: result.problem });
       return { joined: true };
     },
   );
@@ -246,8 +303,10 @@ export async function swapRoutes(app: FastifyInstance) {
       // Keyset pagination on the primary key: each page is a range scan inside the swap's rows.
       const [[rows], [counts]] = await Promise.all([
         database.run({
-          sql: `SELECT m.UserId, u.Email, u.DisplayName, FORMAT_TIMESTAMP('%FT%TZ', m.CreatedAt) AS JoinedAt
+          sql: `SELECT m.UserId, u.Email, u.DisplayName, FORMAT_TIMESTAMP('%FT%TZ', m.CreatedAt) AS JoinedAt,
+                       p.InstagramHandle, p.InstagramStatus
                 FROM SwapMembers m JOIN Users u ON u.UserId = m.UserId
+                LEFT JOIN UserProfiles p ON p.UserId = m.UserId
                 WHERE m.SwapId = @swapId AND m.Role = 'participant' AND m.UserId > @after
                 ORDER BY m.UserId
                 LIMIT @limit`,
@@ -267,6 +326,9 @@ export async function swapRoutes(app: FastifyInstance) {
           email: r.Email,
           displayName: r.DisplayName,
           joinedAt: r.JoinedAt,
+          instagramHandle: r.InstagramHandle,
+          // Anything short of a confirmed public account is flagged for the manager.
+          instagramConfirmed: r.InstagramStatus === 'public',
         })),
         total: Number((counts[0] as { Total: number }).Total),
         nextCursor: rows.length > limit ? page[page.length - 1].UserId : null,

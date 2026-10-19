@@ -1,11 +1,38 @@
+import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { api } from '../api';
 import { hasRole, useAuth } from '../auth/AuthContext';
+import type { Swap } from '../swaps/swaps';
+
+function SwapSection({ title, swaps }: { title: string; swaps: Swap[] }) {
+  if (swaps.length === 0) return null;
+  return (
+    <section className="stack" aria-labelledby={title}>
+      <h2 id={title}>{title}</h2>
+      <ul className="user-list">
+        {swaps.map((s) => (
+          <li key={s.swapId} className="user-row" aria-label={`${title}: ${s.title}`}>
+            <Link to={`/swaps/${s.swapId}`}>{s.title}</Link>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
 
 export default function HomePage() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [params] = useSearchParams();
+  const [mine, setMine] = useState<{ joined: Swap[]; owned: Swap[] }>({ joined: [], owned: [] });
+
+  useEffect(() => {
+    api<{ joined: Swap[]; owned: Swap[] }>('/api/me/swaps')
+      .then(setMine)
+      .catch(() => {});
+  }, []);
+
   const welcome = (location.state as { welcome?: boolean } | null)?.welcome || params.get('welcome') === '1';
 
   return (
@@ -13,6 +40,8 @@ export default function HomePage() {
       {welcome && <p className="notice">Welcome! Your account is ready.</p>}
       <h1>Hello, {user?.displayName ?? user?.email}</h1>
       <p className="muted">You are signed in as {user?.email}.</p>
+      <SwapSection title="Swaps You've Joined" swaps={mine.joined} />
+      <SwapSection title="Swaps You Own" swaps={mine.owned} />
       <p>
         <Link className="button secondary" to="/swaps">
           Browse swaps
