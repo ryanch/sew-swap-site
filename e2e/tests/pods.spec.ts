@@ -221,17 +221,24 @@ test('when someone drops out, the manager sees who needs a maker and fixes it', 
   const lines = csv.replace(/^﻿/, '').trim().split('\r\n');
   expect(lines[0]).toBe(
     'Name,Email,Instagram,Instagram link,Instagram confirmed,Name on package,Address line 1,Address line 2,City,State/Region,Postal code,Country,Pod,Skill level,' +
-      'Making For,Make Confirmed,Making For 2,Make 2 Confirmed,Making For 3,Make 3 Confirmed,Making For 4,Make 4 Confirmed,Making For 5,Make 5 Confirmed,Made by',
+      'Making For,Make Confirmed,Make Shipped,Make Tracking,Make Tracking link,' +
+      'Making For 2,Make 2 Confirmed,Make 2 Shipped,Make 2 Tracking,Make 2 Tracking link,' +
+      'Making For 3,Make 3 Confirmed,Make 3 Shipped,Make 3 Tracking,Make 3 Tracking link,' +
+      'Making For 4,Make 4 Confirmed,Make 4 Shipped,Make 4 Tracking,Make 4 Tracking link,' +
+      'Making For 5,Make 5 Confirmed,Make 5 Shipped,Make 5 Tracking,Make 5 Tracking link,Made by',
   );
   expect(lines).toHaveLength(1 + 7);
   const franRow = lines.find((l) => l.startsWith(fran.name))!.split(',');
   expect(franRow[3]).toBe(`https://www.instagram.com/${fran.handle}/`);
   expect(franRow[12]).toBe('Loop');
-  // Columns 14-23 pair each person Fran makes for with whether that one is confirmed (not yet: nothing is published).
-  const makingFor = [14, 16, 18, 20, 22].map((i) => franRow[i]);
+  // Columns 14-38 give each person Fran makes for 5 columns: who, confirmed, shipped, tracking and
+  // its link (not confirmed or shipped yet: nothing is published).
+  const slots = [14, 19, 24, 29, 34];
+  const makingFor = slots.map((i) => franRow[i]);
   expect(makingFor.filter(Boolean)).toHaveLength(2);
   expect(makingFor).toContain(`${makers.Monica.name} (@${makers.Monica.handle})`);
-  expect([15, 17, 19, 21, 23].map((i) => franRow[i])).toEqual(['No', 'No', '', '', '']);
+  expect(slots.map((i) => franRow[i + 1])).toEqual(['No', 'No', '', '', '']);
+  expect(slots.map((i) => franRow[i + 2])).toEqual(['No', 'No', '', '', '']);
 });
 
 test('auto-assign pairs a pod of two both ways', async () => {

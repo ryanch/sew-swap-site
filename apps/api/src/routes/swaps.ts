@@ -5,6 +5,7 @@ import { requireAuth } from '../auth/plugin';
 import { hasRole, requireRole } from '../auth/roles';
 import { database } from '../db/spanner';
 import { validateAddress } from '../profile/address';
+import { toShipment, type Shipment } from '../shipping/tracking';
 import { canManage, getSwap, SWAP_COLUMNS, swapParamsSchema, toSwap, type SwapRow } from '../swaps/access';
 import { addressColumns, readProfile } from './profile';
 
@@ -131,11 +132,23 @@ export async function swapRoutes(app: FastifyInstance) {
         }),
         canManage(req.user!, swap.swapId),
       ]);
+      // Packages on their way to the caller. Only the tracking: who made it stays a surprise.
+      let packages: Shipment[] = [];
+      if (membership[0] && swap.makersPublishedAt) {
+        const [rows] = await database.run({
+          sql: `SELECT FORMAT_TIMESTAMP('%FT%TZ', ShippedAt) AS ShippedAt, Carrier, TrackingNumber FROM Assignments
+                WHERE SwapId = @swapId AND RecipientId = @userId AND ShippedAt IS NOT NULL
+                ORDER BY ShippedAt`,
+          params: { swapId: swap.swapId, userId: req.user!.userId },
+          json: true,
+        });
+        packages = (rows as { ShippedAt: string; Carrier: string; TrackingNumber: string }[]).map((r) => toShipment(r)!);
+      }
       return {
         swap,
         canEdit,
         signUpStatus: (status[0] as { Status: string }).Status,
-        membership: membership[0] ? { joinedAt: (membership[0] as { JoinedAt: string }).JoinedAt } : null,
+        membership: membership[0] ? { joinedAt: (membership[0] as { JoinedAt: string }).JoinedAt, packages } : null,
       };
     },
   );

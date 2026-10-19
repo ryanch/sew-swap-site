@@ -66,3 +66,67 @@ export const reminderEmail = (swap: SwapInfo, appBaseUrl: string) =>
     swap,
     appBaseUrl,
   );
+
+/** Asks a maker to ship, and to add the tracking number once they have. */
+export function shipReminderEmail(swap: SwapInfo, appBaseUrl: string, today = new Date().toISOString().slice(0, 10)): Email {
+  const link = `${appBaseUrl}/makes`;
+  const ship = longDate(swap.shipBy);
+  const when = swap.shipBy < today ? `The ship-by date was ${ship}.` : `Please ship by ${ship}.`;
+  const subject = `Reminder: please ship your package for ${swap.title}`;
+  const lead = `This is a reminder from the organizer of ${swap.title}. ${when}`;
+  const text = [
+    'Hello!',
+    '',
+    lead,
+    '',
+    "Once you've sent your package, please sign in to Sew Swap and add the tracking number:",
+    link,
+    '',
+    "If you haven't confirmed who you're making for yet, you can do that there too.",
+  ].join('\n');
+  const html = `
+    <div style="font-family: Arial, sans-serif; font-size: 18px; line-height: 1.5; max-width: 520px">
+      <p>Hello!</p>
+      <p>${escapeHtml(lead)}</p>
+      <p>Once you've sent your package, please sign in and add the tracking number:</p>
+      <p><a href="${link}" style="display:inline-block;background:#1a7f37;color:#fff;padding:14px 28px;border-radius:8px;text-decoration:none;font-size:20px">Add my tracking number</a></p>
+      <p>If you haven't confirmed who you're making for yet, you can do that there too.</p>
+    </div>`;
+  return { subject, text, html };
+}
+
+/** Tells the recipient their package is on its way. It never names the maker. */
+export function packageShippedEmail(
+  swap: { swapId: string; title: string },
+  /** `carrier` is the carrier's name, or null when the maker picked "Other". */
+  shipment: { carrier: string | null; trackingNumber: string; trackingUrl: string | null },
+  appBaseUrl: string,
+): Email {
+  const swapLink = `${appBaseUrl}/swaps/${swap.swapId}`;
+  const subject = `${swap.title}: your package is on its way!`;
+  const tracking = `${shipment.carrier ? `${shipment.carrier} tracking number` : 'Tracking number'}: ${shipment.trackingNumber}`;
+  const text = [
+    'Hello!',
+    '',
+    `Good news: your package from ${swap.title} has been shipped.`,
+    '',
+    tracking,
+    ...(shipment.trackingUrl ? ['Track your package here:', shipment.trackingUrl] : []),
+    '',
+    'You can see this again on the swap page:',
+    swapLink,
+  ].join('\n');
+  const html = `
+    <div style="font-family: Arial, sans-serif; font-size: 18px; line-height: 1.5; max-width: 520px">
+      <p>Hello!</p>
+      <p>Good news: your package from ${escapeHtml(swap.title)} has been shipped.</p>
+      <p><strong>${escapeHtml(tracking)}</strong></p>
+      ${
+        shipment.trackingUrl
+          ? `<p><a href="${escapeHtml(shipment.trackingUrl)}" style="display:inline-block;background:#1a7f37;color:#fff;padding:14px 28px;border-radius:8px;text-decoration:none;font-size:20px">Track my package</a></p>`
+          : ''
+      }
+      <p>You can see this again on <a href="${swapLink}">the swap page</a>.</p>
+    </div>`;
+  return { subject, text, html };
+}

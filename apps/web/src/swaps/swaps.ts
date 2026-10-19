@@ -32,8 +32,11 @@ export type SignUpStatus = 'upcoming' | 'open' | 'closed';
 /** Someone a member makes for, or who makes for them. */
 export type Person = { userId: string; name: string; instagramHandle: string | null };
 
-/** The other end of a pairing, and whether the maker has confirmed it. */
-export type Paired = Person & { confirmed: boolean };
+/** A package the maker has sent. `trackingUrl` is null when the carrier is "Other". */
+export type Shipment = { shippedAt: string; carrier: string; trackingNumber: string; trackingUrl: string | null };
+
+/** The other end of a pairing, whether the maker has confirmed it, and its tracking once shipped. */
+export type Paired = Person & { confirmed: boolean; shipped: Shipment | null };
 
 /** A participant as the swap's managers see them. Skill, pod and pairings are never shown to participants. */
 export type SwapMember = {
@@ -53,6 +56,8 @@ export type SwapMember = {
   madeBy: Paired[];
   /** The last confirmation reminder this person was sent for this swap. */
   lastRemindedAt: string | null;
+  /** The last shipping reminder this person was sent for this swap. */
+  lastShipRemindedAt: string | null;
 };
 
 export type Pod = { podId: string; name: string; count: number };
@@ -77,7 +82,7 @@ export type MemberFilters = {
   country?: string;
   region?: string;
   skill?: string;
-  needs?: 'maker' | 'recipient' | 'confirmation';
+  needs?: 'maker' | 'recipient' | 'confirmation' | 'shipping';
 };
 
 export type MembersPage = { members: SwapMember[]; total: number; nextCursor: string | null };
@@ -107,8 +112,40 @@ export type PublishSummary = {
   pairingsConfirmed: number;
   makers: number;
   makersConfirmed: number;
+  pairingsShipped: number;
+  /** Makers who have shipped to everyone they make for. */
+  makersShipped: number;
 };
 
 export const MAX_REMINDERS_PER_BATCH = 50;
 
 export const instagramUrl = (handle: string) => `https://www.instagram.com/${handle}/`;
+
+/** The carriers a maker can pick. The API builds the tracking links. */
+export const CARRIERS = [
+  ['usps', 'USPS'],
+  ['ups', 'UPS'],
+  ['fedex', 'FedEx'],
+  ['dhl', 'DHL'],
+  ['canadapost', 'Canada Post'],
+  ['purolator', 'Purolator'],
+  ['canpar', 'Canpar Express'],
+  ['other', 'Other'],
+] as const;
+
+export const carrierLabel = (id: string) => CARRIERS.find(([c]) => c === id)?.[1] ?? id;
+
+/**
+ * A likely carrier from the tracking number's format, to pre-select for the maker. Only a guess:
+ * some formats are shared (Purolator and FedEx both use 12 digits), so the maker can change it.
+ */
+export function guessCarrier(input: string): string {
+  const n = input.toUpperCase().replace(/[\s-]+/g, '');
+  if (/^1Z[A-Z0-9]{16}$/.test(n)) return 'ups';
+  if (/^[A-Z]{2}\d{9}CA$/.test(n)) return 'canadapost';
+  if (/^[A-Z]{2}\d{9}US$/.test(n) || /^9\d{19,21}$/.test(n)) return 'usps';
+  if (/^\d{16}$/.test(n)) return 'canadapost';
+  if (/^\d{10}$/.test(n)) return 'dhl';
+  if (/^(\d{12}|\d{15})$/.test(n)) return 'fedex';
+  return '';
+}

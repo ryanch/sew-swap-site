@@ -77,6 +77,13 @@ Node isn't installed on the host, so run npm inside containers. If docker can't 
 - `needs=confirmation` lists makers with an unconfirmed pairing. `POST …/reminders` takes up to 50 `userIds` per batch and skips anyone confirmed or reminded in the last 24 hours.
 - Send notifications with `sendUserMail`. It logs to `EmailLog` as `sending`, then `sent` or `failed`. Only `sent` rows count as sent; `sending` rows still hold back repeat reminders, in case the email went out and `sendToMany` (5 at a time, before the reply, because Cloud Run throttles CPU after it). Sign-in emails aren't logged.
 
+## Shipping (done)
+- `0008_shipping.sql`: `Assignments.ShippedAt`, `.Carrier` and `.TrackingNumber`. Makers ship at `/makes` (`POST …/makes/:recipientId/ship` with `{ carrier, trackingNumber }`). It's 404 before publishing and 409 until that pairing is confirmed. Sending a new number corrects it.
+- Carriers and tracking links are in `src/shipping/tracking.ts`. The maker picks the carrier, and the page pre-selects a guess (`guessCarrier` in web `swaps/swaps.ts`). `other` has no link. USPS and Purolator answer 403 to curl (bot protection), so check their links in a browser.
+- Shipping emails the recipient (`package_shipped`) the tracking, and their swap page shows it (`membership.packages`). Neither ever names the maker.
+- `POST …/reminders` takes `kind: 'confirm' | 'ship'` (default `confirm`). Ship reminders go to anyone with an unshipped pairing, confirmed or not, any time after publishing. Each kind has its own 24-hour gap. `needs=shipping` lists them, and the members page sends them in batches.
+- Manager views and the CSV (`Make N Shipped`, `Make N Tracking`, `Make N Tracking link`) show each pairing's tracking. A maker counts as shipped (`makersShipped`) only when every pairing has shipped.
+
 ## Next
 - Helpers scoped to pods.
 - Partner pairings (partners see each other's shared info).

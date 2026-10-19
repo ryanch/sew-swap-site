@@ -15,7 +15,7 @@ export function sendMail(to: string, subject: string, text: string, html?: strin
   return mailer.sendMail({ from: config.smtp.from, to, subject, text, html });
 }
 
-export type EmailKind = 'makers_published' | 'new_pairing' | 'confirm_reminder';
+export type EmailKind = 'makers_published' | 'new_pairing' | 'confirm_reminder' | 'ship_reminder' | 'package_shipped';
 
 export type Email = { subject: string; text: string; html: string };
 

@@ -11,10 +11,10 @@ import {
   type SwapMember,
 } from '../swaps/swaps';
 
-type Needs = '' | 'maker' | 'recipient' | 'confirmation';
-const NEEDS: Needs[] = ['', 'maker', 'recipient', 'confirmation'];
+type Needs = '' | 'maker' | 'recipient' | 'confirmation' | 'shipping';
+const NEEDS: Needs[] = ['', 'maker', 'recipient', 'confirmation', 'shipping'];
 
-type ReminderResult = { sent: number; failed: number; skippedRecent: number; skippedConfirmed: number };
+type ReminderResult = { sent: number; failed: number; skippedRecent: number; skippedConfirmed?: number; skippedShipped?: number };
 
 /** Who has joined a swap. The API only answers for that swap's managers and admins. */
 export default function SwapMembersPage() {
@@ -31,8 +31,9 @@ export default function SwapMembersPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [reminderNotice, setReminderNotice] = useState('');
   const [sending, setSending] = useState(false);
-  // Reminders go out a batch at a time, so the pending list loads a batch at a time.
-  const pageSize = needs === 'confirmation' ? MAX_REMINDERS_PER_BATCH : undefined;
+  // The filters that remind people. Reminders go out a batch at a time, so these lists load a batch at a time.
+  const reminderKind = needs === 'confirmation' ? 'confirm' : needs === 'shipping' ? 'ship' : null;
+  const pageSize = reminderKind ? MAX_REMINDERS_PER_BATCH : undefined;
 
   // Changing the filter while a page is loading must not let the older answer win.
   const latest = useRef(0);
@@ -64,15 +65,20 @@ export default function SwapMembersPage() {
     });
 
   async function sendReminders() {
-    if (!window.confirm(`Email a reminder to ${people(selected.size)}?`)) return;
+    const what = reminderKind === 'ship' ? 'a shipping reminder' : 'a reminder';
+    if (!window.confirm(`Email ${what} to ${people(selected.size)}?`)) return;
     setSending(true);
     setError('');
     setReminderNotice('');
     try {
-      const r = await api<ReminderResult>(`/api/swaps/${swapId}/reminders`, { method: 'POST', body: { userIds: [...selected] } });
-      const parts = [`Sent ${r.sent} ${r.sent === 1 ? 'reminder' : 'reminders'}.`];
+      const r = await api<ReminderResult>(`/api/swaps/${swapId}/reminders`, {
+        method: 'POST',
+        body: { userIds: [...selected], kind: reminderKind },
+      });
+      const parts = [`Sent ${r.sent} ${reminderKind === 'ship' ? 'shipping ' : ''}${r.sent === 1 ? 'reminder' : 'reminders'}.`];
       if (r.skippedRecent) parts.push(`Skipped ${people(r.skippedRecent)} reminded in the last day.`);
       if (r.skippedConfirmed) parts.push(`Skipped ${people(r.skippedConfirmed)} who already confirmed.`);
+      if (r.skippedShipped) parts.push(`Skipped ${people(r.skippedShipped)} who already shipped everything.`);
       if (r.failed) parts.push(`${r.failed} could not be sent.`);
       setReminderNotice(parts.join(' '));
       setSelected(new Set());
@@ -84,7 +90,7 @@ export default function SwapMembersPage() {
     }
   }
 
-  const reminding = published && needs === 'confirmation';
+  const reminding = published && reminderKind !== null;
 
   return (
     <main className="stack wide">
@@ -109,6 +115,15 @@ export default function SwapMembersPage() {
               </p>
             )
           }
+          shipAction={
+            needs !== 'shipping' && (
+              <p>
+                <button className="secondary" onClick={() => setNeeds('shipping')}>
+                  Show who hasn't shipped
+                </button>
+              </p>
+            )
+          }
         />
       )}
       <p className="toolbar">
@@ -126,6 +141,7 @@ export default function SwapMembersPage() {
           <option value="maker">Needs attention: nobody is making for them</option>
           <option value="recipient">Needs attention: not making for anyone</option>
           <option value="confirmation">Hasn't confirmed who they're making for</option>
+          <option value="shipping">Hasn't shipped everything</option>
         </select>
       </div>
       {error && (
@@ -154,7 +170,7 @@ export default function SwapMembersPage() {
             </button>
           )}
           <button disabled={sending || selected.size === 0} onClick={sendReminders}>
-            Send reminder to {people(selected.size)}
+            Send {reminderKind === 'ship' ? 'shipping reminder' : 'reminder'} to {people(selected.size)}
           </button>
           <span className="muted small">Up to {MAX_REMINDERS_PER_BATCH} at a time.</span>
         </div>
@@ -169,7 +185,10 @@ export default function SwapMembersPage() {
                   Remind {m.name}
                 </label>
                 <span className="muted small">
-                  {m.lastRemindedAt ? `Last reminded ${formatTimestamp(m.lastRemindedAt)}` : 'Never reminded'}
+                  {(() => {
+                    const last = reminderKind === 'ship' ? m.lastShipRemindedAt : m.lastRemindedAt;
+                    return last ? `Last reminded ${formatTimestamp(last)}` : 'Never reminded';
+                  })()}
                 </span>
               </div>
             )}

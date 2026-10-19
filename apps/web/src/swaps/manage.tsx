@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
 import {
+  carrierLabel,
   formatDate,
   formatTimestamp,
   instagramUrl,
@@ -13,6 +14,7 @@ import {
   type Paired,
   type Person,
   type PublishSummary,
+  type Shipment,
   type SwapMember,
 } from './swaps';
 
@@ -40,6 +42,23 @@ export function InstagramLink({ handle, confirmed }: { handle: string | null; co
           </span>
         </>
       )}
+    </>
+  );
+}
+
+/** "UPS 1Z…", with the number linked to the carrier's tracking page when there is one. */
+export function TrackingLink({ shipment }: { shipment: Shipment }) {
+  const number = shipment.trackingUrl ? (
+    <a href={shipment.trackingUrl} target="_blank" rel="noreferrer">
+      {shipment.trackingNumber}
+    </a>
+  ) : (
+    shipment.trackingNumber
+  );
+  return (
+    <>
+      {shipment.carrier !== 'other' && `${carrierLabel(shipment.carrier)} `}
+      {number}
     </>
   );
 }
@@ -100,8 +119,19 @@ export function SkillSelect({
 /**
  * A comma-separated list of people, each linked to their page and their Instagram.
  * With `showConfirmed` (once makers are published), each says whether the maker has confirmed.
+ * With `showShipped`, each says whether the package has shipped, with its tracking.
  */
-export function PeopleLinks({ swapId, people, showConfirmed }: { swapId: string; people: (Person | Paired)[]; showConfirmed?: boolean }) {
+export function PeopleLinks({
+  swapId,
+  people,
+  showConfirmed,
+  showShipped,
+}: {
+  swapId: string;
+  people: (Person | Paired)[];
+  showConfirmed?: boolean;
+  showShipped?: boolean;
+}) {
   return (
     <>
       {people.map((p, i) => (
@@ -123,6 +153,19 @@ export function PeopleLinks({ swapId, people, showConfirmed }: { swapId: string;
               <>
                 {' '}
                 <span className="badge">not confirmed yet</span>
+              </>
+            ))}
+          {showShipped &&
+            'shipped' in p &&
+            (p.shipped ? (
+              <span className="confirmed">
+                {' '}
+                📦 shipped (<TrackingLink shipment={p.shipped} />)
+              </span>
+            ) : (
+              <>
+                {' '}
+                <span className="badge">not shipped yet</span>
               </>
             ))}
         </span>
@@ -168,7 +211,7 @@ export function MemberRow({
       <div className="small">
         Makes for:{' '}
         {member.makingFor.length ? (
-          <PeopleLinks swapId={swapId} people={member.makingFor} showConfirmed={published} />
+          <PeopleLinks swapId={swapId} people={member.makingFor} showConfirmed={published} showShipped={published} />
         ) : (
           <span className="badge">Not making for anyone</span>
         )}
@@ -176,7 +219,7 @@ export function MemberRow({
       <div className="small">
         Made by:{' '}
         {member.madeBy.length ? (
-          <PeopleLinks swapId={swapId} people={member.madeBy} />
+          <PeopleLinks swapId={swapId} people={member.madeBy} showShipped={published} />
         ) : (
           <span className="badge">Nobody is making for them</span>
         )}
@@ -290,12 +333,15 @@ export function PublishPanel({
   summary,
   onPublished,
   pendingAction,
+  shipAction,
 }: {
   swapId: string;
   summary: PublishSummary;
   onPublished: () => void;
   /** "Show who hasn't confirmed", once published. */
   pendingAction?: ReactNode;
+  /** "Show who hasn't shipped", once published. */
+  shipAction?: ReactNode;
 }) {
   const [step, setStep] = useState<'idle' | 'confirming'>('idle');
   const [busy, setBusy] = useState(false);
@@ -352,8 +398,17 @@ export function PublishPanel({
             ({summary.pairingsConfirmed} of {summary.pairings} pairings)
           </span>
         </p>
-        {gapWarning}
         {summary.makersConfirmed < summary.makers && pendingAction}
+        <p>
+          <strong>
+            {summary.makersShipped} of {summary.makers} makers have shipped everything.
+          </strong>{' '}
+          <span className="muted">
+            ({summary.pairingsShipped} of {summary.pairings} packages)
+          </span>
+        </p>
+        {summary.makersShipped < summary.makers && shipAction}
+        {gapWarning}
       </section>
     );
   }

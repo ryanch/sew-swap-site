@@ -9,6 +9,7 @@ import { newPairingEmail } from '../email/templates';
 import { toCsv } from '../pods/csv';
 import { planLoop, type Edge } from '../pods/loop';
 import { planSplit } from '../pods/split';
+import { carrierLabel, toShipment, type Shipment } from '../shipping/tracking';
 import { canManage, getSwap, swapParamsSchema } from '../swaps/access';
 
 // Everything here is the swap manager's private view: skill levels, pods and who makes for whom
@@ -43,11 +44,15 @@ type MemberRow = {
   PostalCode: string | null;
   Country: string | null;
   LastRemindedAt: string | null;
+  LastShipRemindedAt: string | null;
 };
 
 type Person = { userId: string; name: string; instagramHandle: string | null };
-/** Someone on the other end of a pairing. `confirmed` is whether the maker has confirmed it. */
-type Paired = Person & { confirmed: boolean };
+/**
+ * Someone on the other end of a pairing. `confirmed` is whether the maker has confirmed it, and
+ * `shipped` the package's tracking once the maker has sent it.
+ */
+type Paired = Person & { confirmed: boolean; shipped: Shipment | null };
 
 export type MemberFilters = {
   userId?: string;
@@ -57,7 +62,7 @@ export type MemberFilters = {
   country?: string;
   region?: string;
   skill?: string;
-  needs?: 'maker' | 'recipient' | 'confirmation';
+  needs?: 'maker' | 'recipient' | 'confirmation' | 'shipping';
 };
 
 const filterProperties = {
@@ -67,7 +72,7 @@ const filterProperties = {
   country: { type: 'string', maxLength: 2 },
   region: { type: 'string', maxLength: 100 },
   skill: { type: 'string', enum: ['1', '2', '3', '4', '5', 'none'] },
-  needs: { type: 'string', enum: ['maker', 'recipient', 'confirmation'] },
+  needs: { type: 'string', enum: ['maker', 'recipient', 'confirmation', 'shipping'] },
 } as const;
 
 const likeEscape = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
@@ -112,6 +117,8 @@ function memberWhere(swapId: string, f: MemberFilters) {
     where.push('NOT EXISTS (SELECT 1 FROM Assignments a WHERE a.SwapId = m.SwapId AND a.MakerId = m.UserId)');
   } else if (f.needs === 'confirmation') {
     where.push('EXISTS (SELECT 1 FROM Assignments a WHERE a.SwapId = m.SwapId AND a.MakerId = m.UserId AND a.ConfirmedAt IS NULL)');
+  } else if (f.needs === 'shipping') {
+    where.push('EXISTS (SELECT 1 FROM Assignments a WHERE a.SwapId = m.SwapId AND a.MakerId = m.UserId AND a.ShippedAt IS NULL)');
   }
   return { sql: where.join(' AND '), params };
 }
@@ -135,7 +142,10 @@ async function queryMembers(
                    p.RecipientName, p.AddressLine1, p.AddressLine2, p.City, p.Region, p.PostalCode, p.Country,
                    (SELECT FORMAT_TIMESTAMP('%FT%TZ', MAX(e.SentAt)) FROM EmailLog e
                     WHERE e.SwapId = m.SwapId AND e.Kind = 'confirm_reminder' AND e.UserId = m.UserId
-                      AND e.Status = 'sent') AS LastRemindedAt
+                      AND e.Status = 'sent') AS LastRemindedAt,
+                   (SELECT FORMAT_TIMESTAMP('%FT%TZ', MAX(e.SentAt)) FROM EmailLog e
+                    WHERE e.SwapId = m.SwapId AND e.Kind = 'ship_reminder' AND e.UserId = m.UserId
+                      AND e.Status = 'sent') AS LastShipRemindedAt
             ${MEMBER_FROM}
             WHERE ${where.sql} AND m.UserId > @after
             ORDER BY m.UserId
@@ -164,20 +174,29 @@ async function pairingsFor(runner: Database | Transaction, swapId: string, userI
   const madeBy = new Map<string, Paired[]>();
   if (userIds.length === 0) return { makingFor, madeBy };
   const [rows] = await runner.run({
-    sql: `SELECT MakerId, RecipientId, ConfirmedAt IS NOT NULL AS Confirmed FROM Assignments
+    sql: `SELECT MakerId, RecipientId, ConfirmedAt IS NOT NULL AS Confirmed,
+                 FORMAT_TIMESTAMP('%FT%TZ', ShippedAt) AS ShippedAt, Carrier, TrackingNumber
+          FROM Assignments
           WHERE SwapId = @swapId AND (MakerId IN UNNEST(@ids) OR RecipientId IN UNNEST(@ids))`,
     params: { swapId, ids: userIds },
     json: true,
   });
-  const pairs = rows as { MakerId: string; RecipientId: string; Confirmed: boolean }[];
+  const pairs = rows as {
+    MakerId: string;
+    RecipientId: string;
+    Confirmed: boolean;
+    ShippedAt: string | null;
+    Carrier: string | null;
+    TrackingNumber: string | null;
+  }[];
   if (pairs.length === 0) return { makingFor, madeBy };
   const people = await lookupPeople(runner, [...new Set(pairs.flatMap((r) => [r.MakerId, r.RecipientId]))]);
-  const add = (map: Map<string, Paired[]>, key: string, other: string, confirmed: boolean) =>
-    map.set(key, [...(map.get(key) ?? []), { ...people.get(other)!, confirmed }]);
+  const add = (map: Map<string, Paired[]>, key: string, other: string, r: (typeof pairs)[number]) =>
+    map.set(key, [...(map.get(key) ?? []), { ...people.get(other)!, confirmed: r.Confirmed, shipped: toShipment(r) }]);
   const ids = new Set(userIds);
   for (const r of pairs) {
-    if (ids.has(r.MakerId)) add(makingFor, r.MakerId, r.RecipientId, r.Confirmed);
-    if (ids.has(r.RecipientId)) add(madeBy, r.RecipientId, r.MakerId, r.Confirmed);
+    if (ids.has(r.MakerId)) add(makingFor, r.MakerId, r.RecipientId, r);
+    if (ids.has(r.RecipientId)) add(madeBy, r.RecipientId, r.MakerId, r);
   }
   for (const list of [...makingFor.values(), ...madeBy.values()]) list.sort((x, y) => x.name.localeCompare(y.name));
   return { makingFor, madeBy };
@@ -216,6 +235,7 @@ function toMember(r: MemberRow, pairs: Awaited<ReturnType<typeof pairingsFor>>) 
     makingFor: pairs.makingFor.get(r.UserId) ?? [],
     madeBy: pairs.madeBy.get(r.UserId) ?? [],
     lastRemindedAt: r.LastRemindedAt,
+    lastShipRemindedAt: r.LastShipRemindedAt,
   };
 }
 
@@ -678,10 +698,11 @@ export async function podRoutes(app: FastifyInstance) {
           'Name', 'Email', 'Instagram', 'Instagram link', 'Instagram confirmed', 'Name on package',
           'Address line 1', 'Address line 2', 'City', 'State/Region', 'Postal code', 'Country',
           'Pod', 'Skill level',
-          // Each person they make for, followed by whether the maker has confirmed that one.
-          ...Array.from({ length: MAX_RECIPIENTS }, (_, i) =>
-            i === 0 ? ['Making For', 'Make Confirmed'] : [`Making For ${i + 1}`, `Make ${i + 1} Confirmed`],
-          ).flat(),
+          // Each person they make for, then whether the maker has confirmed and shipped that one.
+          ...Array.from({ length: MAX_RECIPIENTS }, (_, i) => {
+            const make = i === 0 ? 'Make' : `Make ${i + 1}`;
+            return [i === 0 ? 'Making For' : `Making For ${i + 1}`, `${make} Confirmed`, `${make} Shipped`, `${make} Tracking`, `${make} Tracking link`];
+          }).flat(),
           'Made by',
         ],
         ...members.map((m) => {
@@ -703,7 +724,15 @@ export async function podRoutes(app: FastifyInstance) {
             m.skillLevel,
             ...Array.from({ length: MAX_RECIPIENTS }, (_, i) => {
               const p = m.makingFor[i];
-              return p ? [label(p), p.confirmed ? 'Yes' : 'No'] : ['', ''];
+              if (!p) return ['', '', '', '', ''];
+              const s = p.shipped;
+              return [
+                label(p),
+                p.confirmed ? 'Yes' : 'No',
+                s ? 'Yes' : 'No',
+                s ? `${s.carrier === 'other' ? '' : `${carrierLabel(s.carrier)} `}${s.trackingNumber}` : '',
+                s?.trackingUrl ?? '',
+              ];
             }).flat(),
             m.madeBy.map(label).join('; '),
           ];

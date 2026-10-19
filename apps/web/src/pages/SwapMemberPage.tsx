@@ -3,8 +3,8 @@ import { Link, useParams } from 'react-router-dom';
 import { api } from '../api';
 import type { Address } from '../swaps/address';
 import { MailingAddress } from '../swaps/MailingAddress';
-import { InstagramLink, memberPath, PersonPicker, SkillSelect } from '../swaps/manage';
-import { MAX_RECIPIENTS, type Person, type Pod, type SwapMember } from '../swaps/swaps';
+import { InstagramLink, memberPath, PersonPicker, SkillSelect, TrackingLink } from '../swaps/manage';
+import { formatTimestamp, MAX_RECIPIENTS, type Paired, type Person, type Pod, type SwapMember } from '../swaps/swaps';
 
 type Detail = SwapMember & { address: Address | null };
 
@@ -141,22 +141,63 @@ function PairList({
   onRemove,
 }: {
   swapId: string;
-  people: Person[];
+  people: Paired[];
   busy: boolean;
   removeLabel: (p: Person) => string;
   onRemove: (p: Person) => void;
 }) {
+  // Removing a shipped pairing deletes its tracking number, so it asks twice: here, then confirm().
+  const [warning, setWarning] = useState<string | null>(null);
   if (people.length === 0) return null;
+
+  function remove(p: Paired) {
+    if (!p.shipped) return onRemove(p);
+    if (!window.confirm(`Remove a pairing that has already shipped? Its tracking number will be deleted, and this can't be undone.`)) return;
+    setWarning(null);
+    onRemove(p);
+  }
+
   return (
     <ul className="user-list">
       {people.map((p) => (
-        <li key={p.userId} className="user-row picker-result" aria-label={p.name}>
-          <div>
-            <Link to={memberPath(swapId, p.userId)}>{p.name}</Link> <InstagramLink handle={p.instagramHandle} />
+        <li key={p.userId} className="user-row stack" aria-label={p.name}>
+          <div className="picker-result">
+            <div>
+              <Link to={memberPath(swapId, p.userId)}>{p.name}</Link> <InstagramLink handle={p.instagramHandle} />
+              {p.shipped && (
+                <div className="small confirmed">
+                  📦 Shipped {formatTimestamp(p.shipped.shippedAt)}: <TrackingLink shipment={p.shipped} />
+                </div>
+              )}
+            </div>
+            <button
+              className="secondary"
+              disabled={busy || warning === p.userId}
+              onClick={() => (p.shipped ? setWarning(p.userId) : onRemove(p))}
+            >
+              {removeLabel(p)}
+            </button>
           </div>
-          <button className="secondary" disabled={busy} onClick={() => onRemove(p)}>
-            {removeLabel(p)}
-          </button>
+          {p.shipped && warning === p.userId && (
+            <div className="warning big-warning stack" role="alert">
+              <p className="tight">
+                <strong>Stop! This package has already been shipped.</strong>
+              </p>
+              <p className="tight">
+                Removing this pairing permanently deletes its tracking number (<TrackingLink shipment={p.shipped} />). The person
+                receiving it will no longer see it on the swap page, and nobody is told. Only do this if the pairing was a mistake
+                and you have saved the tracking number somewhere else.
+              </p>
+              <p className="toolbar">
+                <button className="secondary" onClick={() => setWarning(null)}>
+                  Keep the pairing
+                </button>
+                <button disabled={busy} onClick={() => remove(p)}>
+                  Yes, remove it and delete the tracking
+                </button>
+              </p>
+            </div>
+          )}
         </li>
       ))}
     </ul>

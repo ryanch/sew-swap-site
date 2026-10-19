@@ -2,14 +2,43 @@ import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api';
 import { PublishPanel, usePublishSummary } from '../swaps/manage';
-import { DATE_FIELDS, formatDate, type SignUpStatus, type Swap } from '../swaps/swaps';
+import { carrierLabel, DATE_FIELDS, formatDate, formatTimestamp, type Shipment, type SignUpStatus, type Swap } from '../swaps/swaps';
 
 type SwapData = {
   swap: Swap;
   canEdit: boolean;
   signUpStatus: SignUpStatus;
-  membership: { joinedAt: string } | null;
+  /** `packages` are on their way to the caller. Only the tracking: who made them stays a surprise. */
+  membership: { joinedAt: string; packages: Shipment[] } | null;
 };
+
+/** The participant's incoming packages, once makers are published. */
+function YourPackages({ packages }: { packages: Shipment[] }) {
+  return (
+    <section className="panel stack" aria-label="Your package">
+      <h2>Your package</h2>
+      {packages.length === 0 && <p className="tight">Not shipped yet. We'll email you the tracking number when it is.</p>}
+      {packages.map((p) => (
+        <div key={`${p.carrier}-${p.trackingNumber}`} className="stack">
+          <p className="tight">
+            📦 A package is on its way to you! Shipped {formatTimestamp(p.shippedAt)}
+            {p.carrier !== 'other' && ` with ${carrierLabel(p.carrier)}`}.
+          </p>
+          <p className="tight">
+            Tracking number: <strong>{p.trackingNumber}</strong>
+          </p>
+          {p.trackingUrl && (
+            <p className="tight">
+              <a className="button" href={p.trackingUrl} target="_blank" rel="noreferrer">
+                Track my package
+              </a>
+            </p>
+          )}
+        </div>
+      ))}
+    </section>
+  );
+}
 
 export default function SwapDetailPage() {
   const { swapId } = useParams();
@@ -71,6 +100,7 @@ export default function SwapDetailPage() {
                   </Link>
                 </p>
               )}
+              {data.swap.makersPublishedAt && <YourPackages packages={data.membership.packages} />}
               <p>
                 {data.signUpStatus === 'open' && (
                   <>
@@ -130,6 +160,13 @@ function ManagerPublish({ swapId }: { swapId: string }) {
         <p>
           <Link className="button secondary" to={`/manage/swaps/${swapId}/members?needs=confirmation`}>
             Show who hasn't confirmed
+          </Link>
+        </p>
+      }
+      shipAction={
+        <p>
+          <Link className="button secondary" to={`/manage/swaps/${swapId}/members?needs=shipping`}>
+            Show who hasn't shipped
           </Link>
         </p>
       }

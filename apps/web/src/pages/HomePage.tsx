@@ -28,13 +28,17 @@ export default function HomePage() {
   const [params] = useSearchParams();
   const [mine, setMine] = useState<{ joined: Swap[]; owned: Swap[] }>({ joined: [], owned: [] });
   const [toConfirm, setToConfirm] = useState(0);
+  const [toShip, setToShip] = useState(0);
 
   useEffect(() => {
     api<{ joined: Swap[]; owned: Swap[] }>('/api/me/swaps')
       .then(setMine)
       .catch(() => {});
     api<{ makes: Make[] }>('/api/me/makes')
-      .then((r) => setToConfirm(r.makes.filter((m) => !m.confirmedAt).length))
+      .then((r) => {
+        setToConfirm(r.makes.filter((m) => !m.confirmedAt).length);
+        setToShip(r.makes.filter((m) => m.confirmedAt && !m.shipped).length);
+      })
       .catch(() => {});
   }, []);
 
@@ -52,6 +56,16 @@ export default function HomePage() {
           </p>
           <Link className="button full" to="/makes">
             Confirm who you're making for ({toConfirm})
+          </Link>
+        </div>
+      )}
+      {toConfirm === 0 && toShip > 0 && (
+        <div className="notice stack">
+          <p className="tight">
+            <strong>Have you shipped your package?</strong> When you have, please add the tracking number.
+          </p>
+          <Link className="button full" to="/makes">
+            Add your tracking number ({toShip})
           </Link>
         </div>
       )}
