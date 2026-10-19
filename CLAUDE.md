@@ -15,7 +15,10 @@ docker compose up -d --build                         # web :5173, api :8080
 docker compose --profile test run --rm --build e2e   # e2e tests
 docker compose restart spanner api                   # after any migration change
 docker build --target prod apps/api                  # prod image (same for apps/web)
+docker compose exec api npm run seed:demo            # emulator only: new open swap owned by the admin, 50 makers
 ```
+The demo seed (`src/scripts/seedDemoSwap.ts`) reuses `demo01…demo50@example.test`: 5 in Hawaii, 8 in Canada, 37 elsewhere in the US, 10 at each skill level, all in Default with no pairings. Each run adds another swap. Run it again after restarting `spanner`.
+
 Node isn't installed on the host, so run npm inside containers. If docker can't find `docker-credential-desktop`, add `/Applications/Docker.app/Contents/Resources/bin` to PATH.
 
 ## Auth (done)
@@ -40,11 +43,11 @@ Node isn't installed on the host, so run npm inside containers. If docker can't 
 ## Swaps (done)
 - `Swaps` (title, description, five `DATE` columns) and `SwapMembers(SwapId, UserId, Role)` (see Joining swaps), in `0004_swaps.sql`. The API sends and takes dates as `YYYY-MM-DD` strings (`FORMAT_DATE` in SQL).
 - Any signed-in user can browse `/swaps` and open a detail page.
-- Swap managers (and admins) create swaps at `/manage/swaps`. The creator gets a `manager` row in `SwapMembers`. Only that swap's managers and admins can edit it (`canManage` in `routes/swaps.ts`).
+- Swap managers (and admins) create swaps at `/manage/swaps`. The creator gets a `manager` row in `SwapMembers`. Only that swap's managers and admins can edit it (`canManage` in `src/swaps/access.ts`).
 
 ## Joining swaps (done)
 - `SwapMembers` is keyed `(SwapId, UserId, Role)`, so anyone can join as a `participant`, including a swap's own manager or an admin, without losing their other role.
-- `PUT`/`DELETE /api/swaps/:swapId/membership` join and leave. Joining works only from `SignUpOpens` through `SignUpCloses` inclusive, compared to `CURRENT_DATE()` (UTC). Leaving is always allowed and removes only the participant row.
+- `PUT`/`DELETE /api/swaps/:swapId/membership` join and leave. Joining works only from `SignUpOpens` through `SignUpCloses` inclusive, compared to `CURRENT_DATE()` (UTC). Leaving is always allowed and removes only the participant row (and that person's assignments).
 - `GET /api/swaps/:swapId/members` (managers and admins) lists participants with keyset pagination on `UserId` (`limit`, `after`, returns `nextCursor` and `total`). The UI is `/manage/swaps/:swapId/members`.
 - e2e swaps that must stay "not open" use 2099 dates; tests that need an open swap compute dates from today.
 
@@ -56,7 +59,15 @@ Node isn't installed on the host, so run npm inside containers. If docker can't 
 - Checks are rate limited per user (`INSTAGRAM_CHECK_MIN_SECONDS` apart, 15 per hour) and the button counts down. Compose uses the `fake` strategy (prefixes `private`, `nosuch`, `exists`, `unknown`; anything else is public) and a 2-second gap.
 - Unit tests: `docker compose exec api npx tsx --test src/**/*.test.ts`.
 
+## Pods and pairing (done)
+- `0006_pods.sql`: `Pods(SwapId, PodId, Name)`, `SwapMembers.SkillLevel` (1–5) and `.PodId` on participant rows, and `Assignments(SwapId, MakerId, RecipientId)` (maker makes for recipient). All manager-only: routes in `routes/pods.ts` check `canManage` (`src/swaps/access.ts`) and nothing reaches participants.
+- The Default pod is virtual: `PodId` NULL, `default` in URLs, always listed, can't be renamed or deleted. A person is in one pod, but can make for anyone in the swap, up to `MAX_RECIPIENTS` (5). Moving people between pods or deleting a pod never changes assignments.
+- `GET …/members` takes filters (`pod`, `exceptPod`, `q`, `country`, `region`, `skill` incl. `none`, `needs=maker|recipient`) and returns skill, pod, `makingFor`, `madeBy`. Same keyset pagination.
+- Split (`src/pods/split.ts`) sorts by skill, country, region, postal code into even pods named "<pod> N", then deletes the old pod. Auto-assign (`src/pods/loop.ts`) only adds rows: it chains existing pairings into one shuffled loop and reports who's left over.
+- Leaving a swap deletes the person's assignments both ways; the members page's "Needs attention" filter shows the gaps.
+- `GET …/export.csv`: one row per participant, with the Instagram link, address, pod, skill, `Making For` … `Making For 5`, `Made by`. Cells are formula-guarded (`src/pods/csv.ts`).
+- Managers rate skill by looking at Instagram, so manager views always show `@handle` as a link next to the skill picker (`src/swaps/manage.tsx` in web).
+
 ## Next
-- The manager pairing participants.
-- Pods (a loop of makers; hidden from participants, and they set a helper's scope).
-- Partner pairings.
+- Helpers scoped to pods.
+- Partner pairings (partners see each other's shared info).

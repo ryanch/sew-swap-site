@@ -3,10 +3,13 @@ import { AuthProvider, RequireAuth, RequireRole } from './auth/AuthContext';
 import AdminUsersPage from './pages/AdminUsersPage';
 import HomePage from './pages/HomePage';
 import LoginPage from './pages/LoginPage';
+import PodPage from './pages/PodPage';
 import SwapDetailPage from './pages/SwapDetailPage';
 import SwapJoinPage from './pages/SwapJoinPage';
+import SwapMemberPage from './pages/SwapMemberPage';
 import SwapMembersPage from './pages/SwapMembersPage';
 import SwapFormPage from './pages/SwapFormPage';
+import SwapPodsPage from './pages/SwapPodsPage';
 import SwapsPage from './pages/SwapsPage';
 import StatusPage from './pages/StatusPage';
 import VerifyPage from './pages/VerifyPage';
@@ -93,6 +96,30 @@ export default function App() {
             element={
               <RequireAuth>
                 <SwapMembersPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/manage/swaps/:swapId/members/:userId"
+            element={
+              <RequireAuth>
+                <SwapMemberPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/manage/swaps/:swapId/pods"
+            element={
+              <RequireAuth>
+                <SwapPodsPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/manage/swaps/:swapId/pods/:podId"
+            element={
+              <RequireAuth>
+                <PodPage />
               </RequireAuth>
             }
           />

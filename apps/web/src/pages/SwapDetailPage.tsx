@@ -96,6 +96,9 @@ export default function SwapDetailPage() {
               </Link>{' '}
               <Link className="button secondary" to={`/manage/swaps/${data.swap.swapId}/members`}>
                 See who's signed up
+              </Link>{' '}
+              <Link className="button secondary" to={`/manage/swaps/${data.swap.swapId}/pods`}>
+                Pods and pairings
               </Link>
             </p>
           )}

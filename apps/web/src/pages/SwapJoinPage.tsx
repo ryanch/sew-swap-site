@@ -48,8 +48,11 @@ export default function SwapJoinPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    // A load that finishes after cleanup (StrictMode runs effects twice) must not overwrite what was typed.
+    let stale = false;
     Promise.all([api<SwapData>(`/api/swaps/${swapId}`), api<Profile>('/api/me/profile')])
       .then(([swapData, profile]) => {
+        if (stale) return;
         setData(swapData);
         setEmail(profile.email);
         if (profile.address) setAddress(profile.address);
@@ -63,7 +66,10 @@ export default function SwapJoinPage() {
           }
         }
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => !stale && setError(e.message));
+    return () => {
+      stale = true;
+    };
   }, [swapId]);
 
   const set = (key: keyof Address) => (value: string) =>

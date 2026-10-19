@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
 import { useAuth, type GlobalRole } from '../auth/AuthContext';
@@ -21,13 +21,16 @@ export default function AdminUsersPage() {
   const [users, setUsers] = useState<AdminUser[] | null>(null);
   const [error, setError] = useState('');
 
+  // Only the newest search may fill the list: the first load can finish after a search typed quickly.
+  const latest = useRef(0);
   const load = useCallback(async (q: string) => {
+    const request = ++latest.current;
     setError('');
     try {
       const res = await api<{ users: AdminUser[] }>(`/api/admin/users?q=${encodeURIComponent(q)}`);
-      setUsers(res.users);
+      if (request === latest.current) setUsers(res.users);
     } catch (err) {
-      setError((err as Error).message);
+      if (request === latest.current) setError((err as Error).message);
     }
   }, []);
 

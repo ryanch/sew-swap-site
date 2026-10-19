@@ -26,13 +26,19 @@ export default function SwapFormPage() {
 
   useEffect(() => {
     if (!swapId) return;
+    // A load that finishes after cleanup (StrictMode runs effects twice) must not overwrite what was typed.
+    let stale = false;
     api<{ swap: Swap; canEdit: boolean }>(`/api/swaps/${swapId}`)
       .then(({ swap: { swapId: _id, ...rest }, canEdit }) => {
+        if (stale) return;
         setForm(rest);
         setCanEdit(canEdit);
       })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
+      .catch((e) => !stale && setError(e.message))
+      .finally(() => !stale && setLoading(false));
+    return () => {
+      stale = true;
+    };
   }, [swapId]);
 
   const set = (key: keyof Form) => (value: string) => setForm((f) => ({ ...f, [key]: value }));

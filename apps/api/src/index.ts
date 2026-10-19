@@ -6,6 +6,7 @@ import { spanner } from './db/spanner';
 import { adminRoutes } from './routes/admin';
 import { authRoutes } from './routes/auth';
 import { healthRoutes } from './routes/health';
+import { podRoutes } from './routes/pods';
 import { profileRoutes } from './routes/profile';
 import { swapRoutes } from './routes/swaps';
 
@@ -23,6 +24,7 @@ async function main() {
   await app.register(adminRoutes);
   await app.register(swapRoutes);
   await app.register(profileRoutes);
+  await app.register(podRoutes);
 
   // Cloud Run sends SIGTERM before stopping an instance.
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {

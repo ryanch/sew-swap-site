@@ -42,6 +42,7 @@ export default function SwapsPage({ mine = false }: { mine?: boolean }) {
             <p className="muted">
               Sign-up: {formatDate(s.signUpOpens)} to {formatDate(s.signUpCloses)}
             </p>
+            {s.swapperCount !== undefined && <p>Swappers: {s.swapperCount}</p>}
             <p className="row">
               <Link className="button secondary" to={`/swaps/${s.swapId}`}>
                 View details

@@ -3,78 +3,12 @@ import { Spanner } from '@google-cloud/spanner';
 import type { FastifyInstance } from 'fastify';
 import { requireAuth } from '../auth/plugin';
 import { hasRole, requireRole } from '../auth/roles';
-import type { AuthUser } from '../auth/users';
 import { database } from '../db/spanner';
 import { validateAddress } from '../profile/address';
+import { canManage, getSwap, SWAP_COLUMNS, swapParamsSchema, toSwap, type SwapRow } from '../swaps/access';
 import { addressColumns, readProfile } from './profile';
 
-type SwapRow = {
-  SwapId: string;
-  Title: string;
-  Description: string;
-  MakingDeadline: string;
-  PartnersAnnounced: string;
-  ShipBy: string;
-  SignUpOpens: string;
-  SignUpCloses: string;
-};
-
-// DATE columns are formatted in SQL so the API always sends YYYY-MM-DD strings.
-const d = (col: string) => `FORMAT_DATE('%F', s.${col}) AS ${col}`;
-const SWAP_COLUMNS = `s.SwapId, s.Title, s.Description, ${[
-  'MakingDeadline',
-  'PartnersAnnounced',
-  'ShipBy',
-  'SignUpOpens',
-  'SignUpCloses',
-]
-  .map(d)
-  .join(', ')}`;
-
-function toSwap(row: SwapRow) {
-  return {
-    swapId: row.SwapId,
-    title: row.Title,
-    description: row.Description,
-    makingDeadline: row.MakingDeadline,
-    partnersAnnounced: row.PartnersAnnounced,
-    shipBy: row.ShipBy,
-    signUpOpens: row.SignUpOpens,
-    signUpCloses: row.SignUpCloses,
-  };
-}
-
-type MemberRow = {
-  UserId: string;
-  Email: string;
-  DisplayName: string | null;
-  JoinedAt: string;
-  InstagramHandle: string | null;
-  InstagramStatus: string | null;
-};
-
 type JoinBody = { address?: unknown; instagramPublicConfirmed?: boolean } | undefined;
-
-async function getSwap(swapId: string) {
-  const [rows] = await database.run({
-    sql: `SELECT ${SWAP_COLUMNS} FROM Swaps s WHERE s.SwapId = @swapId`,
-    params: { swapId },
-    json: true,
-  });
-  const row = rows[0] as SwapRow | undefined;
-  return row ? toSwap(row) : null;
-}
-
-/** Admins manage every swap; everyone else only swaps where they are a manager. */
-async function canManage(user: AuthUser, swapId: string): Promise<boolean> {
-  if (hasRole(user, 'admin')) return true;
-  const [rows] = await database.run({
-    sql: `SELECT 1 AS Ok FROM SwapMembers WHERE SwapId = @swapId AND UserId = @userId AND Role = 'manager'`,
-    params: { swapId, userId: user.userId },
-    json: true,
-  });
-  return rows.length > 0;
-}
 
 type SwapBody = {
   title: string;
@@ -101,11 +35,6 @@ const swapBodySchema = {
     signUpCloses: dateField,
   },
 } as const;
-const swapParamsSchema = {
-  type: 'object',
-  required: ['swapId'],
-  properties: { swapId: { type: 'string', maxLength: 36 } },
-} as const;
 
 /** Returns an error message, or null when the swap is fine. ISO dates compare correctly as strings. */
 function validate(body: SwapBody): string | null {
@@ -126,16 +55,31 @@ function columns(body: SwapBody) {
   };
 }
 
+// For swap lists: whether the caller manages each swap (@all for admins), and if so how many have signed up.
+const MANAGED_SQL = `(@all OR EXISTS (SELECT 1 FROM SwapMembers mm
+                                      WHERE mm.SwapId = s.SwapId AND mm.UserId = @userId AND mm.Role = 'manager'))`;
+const LIST_COLUMNS = `${SWAP_COLUMNS}, ${MANAGED_SQL} AS Managed,
+  (SELECT COUNT(*) FROM SwapMembers c WHERE c.SwapId = s.SwapId AND c.Role = 'participant') AS SwapperCount`;
+
+type ListRow = SwapRow & { Managed: boolean; SwapperCount: number };
+
+/** Sign-up numbers are only for the swap's managers and admins. */
+const toListedSwap = (row: ListRow) => ({
+  ...toSwap(row),
+  ...(row.Managed ? { swapperCount: Number(row.SwapperCount) } : {}),
+});
+
 export async function swapRoutes(app: FastifyInstance) {
   const auth = { preHandler: requireAuth };
   const manager = { preHandler: requireRole('swap_manager') };
 
-  app.get('/api/swaps', auth, async () => {
+  app.get('/api/swaps', auth, async (req) => {
     const [rows] = await database.run({
-      sql: `SELECT ${SWAP_COLUMNS} FROM Swaps s ORDER BY s.SignUpOpens DESC, s.Title`,
+      sql: `SELECT ${LIST_COLUMNS} FROM Swaps s ORDER BY s.SignUpOpens DESC, s.Title`,
+      params: { all: hasRole(req.user, 'admin'), userId: req.user!.userId },
       json: true,
     });
-    return { swaps: (rows as SwapRow[]).map(toSwap) };
+    return { swaps: (rows as ListRow[]).map(toListedSwap) };
   });
 
   // For the home page: swaps the caller joined as a participant, and swaps they own as a manager.
@@ -157,14 +101,11 @@ export async function swapRoutes(app: FastifyInstance) {
   app.get('/api/swaps/mine', manager, async (req) => {
     const all = hasRole(req.user, 'admin');
     const [rows] = await database.run({
-      sql: `SELECT ${SWAP_COLUMNS} FROM Swaps s
-            WHERE @all OR EXISTS (SELECT 1 FROM SwapMembers m
-                                  WHERE m.SwapId = s.SwapId AND m.UserId = @userId AND m.Role = 'manager')
-            ORDER BY s.SignUpOpens DESC, s.Title`,
+      sql: `SELECT ${LIST_COLUMNS} FROM Swaps s WHERE ${MANAGED_SQL} ORDER BY s.SignUpOpens DESC, s.Title`,
       params: { all, userId: req.user!.userId },
       json: true,
     });
-    return { swaps: (rows as SwapRow[]).map(toSwap) };
+    return { swaps: (rows as ListRow[]).map(toListedSwap) };
   });
 
   app.get<{ Params: { swapId: string } }>(
@@ -272,67 +213,23 @@ export async function swapRoutes(app: FastifyInstance) {
     '/api/swaps/:swapId/membership',
     { ...auth, schema: { params: swapParamsSchema } },
     async (req, reply) => {
-      // Deleting a key that doesn't exist is a no-op, so leaving twice is fine.
-      await database.table('SwapMembers').deleteRows([[req.params.swapId, req.user!.userId, 'participant']]);
-      return reply.code(204).send();
-    },
-  );
-
-  app.get<{ Params: { swapId: string }; Querystring: { limit?: number; after?: string } }>(
-    '/api/swaps/:swapId/members',
-    {
-      ...auth,
-      schema: {
-        params: swapParamsSchema,
-        querystring: {
-          type: 'object',
-          properties: {
-            limit: { type: 'integer', minimum: 1, maximum: 500, default: 100 },
-            after: { type: 'string', maxLength: 36 },
-          },
-        },
-      },
-    },
-    async (req, reply) => {
       const { swapId } = req.params;
-      if (!(await getSwap(swapId))) return reply.code(404).send({ error: 'That swap was not found.' });
-      if (!(await canManage(req.user!, swapId))) {
-        return reply.code(403).send({ error: "You can't see who joined this swap." });
-      }
-      const limit = req.query.limit ?? 100;
-      // Keyset pagination on the primary key: each page is a range scan inside the swap's rows.
-      const [[rows], [counts]] = await Promise.all([
-        database.run({
-          sql: `SELECT m.UserId, u.Email, u.DisplayName, FORMAT_TIMESTAMP('%FT%TZ', m.CreatedAt) AS JoinedAt,
-                       p.InstagramHandle, p.InstagramStatus
-                FROM SwapMembers m JOIN Users u ON u.UserId = m.UserId
-                LEFT JOIN UserProfiles p ON p.UserId = m.UserId
-                WHERE m.SwapId = @swapId AND m.Role = 'participant' AND m.UserId > @after
-                ORDER BY m.UserId
-                LIMIT @limit`,
-          params: { swapId, after: req.query.after ?? '', limit: Spanner.int(limit + 1) },
+      const userId = req.user!.userId;
+      // Their pairings go too, so the manager sees who now needs a maker. Deleting a key that
+      // doesn't exist is a no-op, so leaving twice is fine.
+      await database.runTransactionAsync(async (tx) => {
+        const [pairs] = await tx.run({
+          sql: `SELECT MakerId, RecipientId FROM Assignments
+                WHERE SwapId = @swapId AND (MakerId = @userId OR RecipientId = @userId)`,
+          params: { swapId, userId },
           json: true,
-        }),
-        database.run({
-          sql: `SELECT COUNT(*) AS Total FROM SwapMembers WHERE SwapId = @swapId AND Role = 'participant'`,
-          params: { swapId },
-          json: true,
-        }),
-      ]);
-      const page = (rows as MemberRow[]).slice(0, limit);
-      return {
-        members: page.map((r) => ({
-          userId: r.UserId,
-          email: r.Email,
-          displayName: r.DisplayName,
-          joinedAt: r.JoinedAt,
-          instagramHandle: r.InstagramHandle,
-          // Anything short of a confirmed public account is flagged for the manager.
-          instagramConfirmed: r.InstagramStatus === 'public',
-        })),
-        total: Number((counts[0] as { Total: number }).Total),
-        nextCursor: rows.length > limit ? page[page.length - 1].UserId : null,
-      };
+        });
+        const keys = (pairs as { MakerId: string; RecipientId: string }[]).map((p) => [swapId, p.MakerId, p.RecipientId]);
+        if (keys.length) tx.deleteRows('Assignments', keys);
+        tx.deleteRows('SwapMembers', [[swapId, userId, 'participant']]);
+        await tx.commit();
+      });
+      return reply.code(204).send();
     },
   );
 
