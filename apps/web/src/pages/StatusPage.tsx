@@ -4,9 +4,9 @@ type Check = { ok: boolean; error?: string; roundTripMs?: number; message?: stri
 type Health = { status: string; spanner: Check; smtp: Check };
 
 function StatusCard({ label, ok, detail }: { label: string; ok: boolean | null; detail?: string }) {
-  const color = ok === null ? '#999' : ok ? '#1a7f37' : '#cf222e';
+  const color = ok === null ? 'var(--taupe)' : ok ? 'var(--teal)' : 'var(--red)';
   return (
-    <div style={{ border: `2px solid ${color}`, borderRadius: 8, padding: 16, marginBottom: 12 }}>
+    <div style={{ border: `2px solid ${color}`, borderRadius: 10, padding: 16, background: 'var(--paper)', marginBottom: 12 }}>
       <strong style={{ color }}>{ok === null ? '…' : ok ? '✔' : '✘'} {label}</strong>
       {detail && <div style={{ fontSize: 14, marginTop: 4 }}>{detail}</div>}
     </div>
@@ -45,7 +45,7 @@ export default function StatusPage() {
   };
 
   return (
-    <main style={{ fontFamily: 'system-ui, sans-serif', maxWidth: 560, margin: '40px auto', padding: '0 16px' }}>
+    <main style={{ maxWidth: 560 }}>
       <h1>System status</h1>
       <StatusCard label="API" ok={apiOk} />
       <StatusCard

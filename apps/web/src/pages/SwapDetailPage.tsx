@@ -80,53 +80,55 @@ export default function SwapDetailPage() {
       )}
       {data && (
         <>
-          <h1>{data.swap.title}</h1>
-          {data.swap.description && <p style={{ whiteSpace: 'pre-wrap' }}>{data.swap.description}</p>}
-          <dl className="dates">
-            {DATE_FIELDS.map(([key, label]) => (
-              <div key={key}>
-                <dt>{label}</dt>
-                <dd>{formatDate(data.swap[key])}</dd>
-              </div>
-            ))}
-          </dl>
-          {data.membership ? (
-            <>
-              <p>You've joined this swap.</p>
-              {data.swap.makersPublishedAt && (
-                <p>
-                  <Link className="button" to="/makes">
-                    See who you're making for
-                  </Link>
-                </p>
-              )}
-              {data.swap.makersPublishedAt && <YourPackages packages={data.membership.packages} />}
-              <p>
-                {data.signUpStatus === 'open' && (
-                  <>
-                    <Link className="button secondary" to={`/swaps/${data.swap.swapId}/join`}>
-                      Change my details
-                    </Link>{' '}
-                  </>
+          <section className="panel stack">
+            <h1>{data.swap.title}</h1>
+            {data.swap.description && <p style={{ whiteSpace: 'pre-wrap' }}>{data.swap.description}</p>}
+            <dl className="dates">
+              {DATE_FIELDS.map(([key, label]) => (
+                <div key={key}>
+                  <dt>{label}</dt>
+                  <dd>{formatDate(data.swap[key])}</dd>
+                </div>
+              ))}
+            </dl>
+            {data.membership ? (
+              <>
+                <p>You've joined this swap.</p>
+                {data.swap.makersPublishedAt && (
+                  <p>
+                    <Link className="button" to="/makes">
+                      See who you're making for
+                    </Link>
+                  </p>
                 )}
-                <button className="secondary" disabled={busy} onClick={leave}>
-                  Leave this swap
-                </button>
+                {data.swap.makersPublishedAt && <YourPackages packages={data.membership.packages} />}
+                <p>
+                  {data.signUpStatus === 'open' && (
+                    <>
+                      <Link className="button secondary" to={`/swaps/${data.swap.swapId}/join`}>
+                        Change my details
+                      </Link>{' '}
+                    </>
+                  )}
+                  <button className="secondary" disabled={busy} onClick={leave}>
+                    Leave this swap
+                  </button>
+                </p>
+              </>
+            ) : data.signUpStatus === 'open' ? (
+              <p>
+                <Link className="button" to={`/swaps/${data.swap.swapId}/join`}>
+                  Join this swap
+                </Link>
               </p>
-            </>
-          ) : data.signUpStatus === 'open' ? (
-            <p>
-              <Link className="button" to={`/swaps/${data.swap.swapId}/join`}>
-                Join this swap
-              </Link>
-            </p>
-          ) : (
-            <p className="muted">
-              {data.signUpStatus === 'upcoming'
-                ? `Sign-up opens on ${formatDate(data.swap.signUpOpens)}.`
-                : 'Sign-up for this swap has closed.'}
-            </p>
-          )}
+            ) : (
+              <p className="muted">
+                {data.signUpStatus === 'upcoming'
+                  ? `Sign-up opens on ${formatDate(data.swap.signUpOpens)}.`
+                  : 'Sign-up for this swap has closed.'}
+              </p>
+            )}
+          </section>
           {data.canEdit && <ManagerPublish swapId={data.swap.swapId} />}
           {data.canEdit && (
             <p>

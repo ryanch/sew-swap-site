@@ -6,6 +6,7 @@ import HomePage from './pages/HomePage';
 import LoginPage from './pages/LoginPage';
 import MakesPage from './pages/MakesPage';
 import PodPage from './pages/PodPage';
+import SiteHeader from './SiteHeader';
 import SwapDetailPage from './pages/SwapDetailPage';
 import SwapJoinPage from './pages/SwapJoinPage';
 import SwapMemberPage from './pages/SwapMemberPage';
@@ -20,6 +21,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
+        <SiteHeader />
         <Routes>
           <Route
             path="/"
