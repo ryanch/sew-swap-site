@@ -20,6 +20,8 @@ export type ProfileDoc = {
   InstagramStatus: string | null;
   InstagramCheckedAt: Timestamp | null;
   InstagramStrategy: string | null;
+  /** The post link that passed the check, to prefill the next sign-up. */
+  InstagramPostUrl?: string | null;
 };
 
 /** What to call someone: their display name, else the name on their address, else their email. */

@@ -1,4 +1,5 @@
-import type { IgResult, InstagramStrategy } from './check';
+import type { IgResult, InstagramStrategy, PostStrategy } from './check';
+import { HANDLE_RE } from './handle';
 
 const BROWSER_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
@@ -71,6 +72,68 @@ export const crawlerPage: InstagramStrategy = {
   },
 };
 
+/**
+ * The post's owner, from the page a link-preview crawler gets: `og:url` is
+ * "https://www.instagram.com/<owner>/p/<code>/", and `og:description` ends "- <owner> on <date>: …".
+ * Null when the page has neither, which is what a missing post or a private account's post gets.
+ */
+export function postOwner(html: string): string | null {
+  const meta = (property: string) =>
+    new RegExp(`<meta[^>]+property="og:${property}"[^>]+content="([^"]*)"`).exec(html)?.[1] ?? '';
+  const candidates = [
+    /^https:\/\/www\.instagram\.com\/([^/]+)\/(?:p|reels?|tv)\//.exec(meta('url'))?.[1],
+    / - ([A-Za-z0-9._]{1,30}) on [A-Z][a-z]+ \d/.exec(meta('description'))?.[1],
+  ];
+  for (const c of candidates) {
+    const handle = c?.toLowerCase();
+    if (handle && HANDLE_RE.test(handle)) return handle;
+  }
+  return null;
+}
+
+async function fetchPostPage(url: string, signal: AbortSignal) {
+  // Share links redirect to the post. Follow a few hops, but only within instagram.com.
+  for (let hop = 0; hop < 4; hop++) {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': CRAWLER_UA, 'Accept-Language': 'en-US' },
+      redirect: 'manual',
+      signal,
+    });
+    const location = res.headers.get('location');
+    if (res.status >= 300 && res.status < 400 && location) {
+      const next = new URL(location, url);
+      if (next.protocol !== 'https:' || !/(^|\.)instagram\.com$/.test(next.hostname)) break;
+      url = next.href;
+      continue;
+    }
+    return { status: res.status, html: res.status === 200 ? await res.text() : '' };
+  }
+  return { status: 0, html: '' };
+}
+
+// Kevin Systrom's first post (2010). If even it shows no owner, Instagram changed the page.
+const CONTROL_POST = 'https://www.instagram.com/p/C/';
+let controlPostOk: { ok: boolean; at: number } | null = null;
+
+async function postCrawlerStillWorks(signal: AbortSignal): Promise<boolean> {
+  if (controlPostOk && Date.now() - controlPostOk.at < 10 * 60_000) return controlPostOk.ok;
+  const { status, html } = await fetchPostPage(CONTROL_POST, signal);
+  controlPostOk = { ok: status === 200 && postOwner(html) !== null, at: Date.now() };
+  return controlPostOk.ok;
+}
+
+/** The post as a link-preview crawler sees it. Readable means public, and the page names the owner. */
+export const crawlerPost: PostStrategy = {
+  name: 'crawlerPost',
+  async check(url, signal) {
+    const { status, html } = await fetchPostPage(url, signal);
+    if (status !== 200) return { result: 'unknown' };
+    const handle = postOwner(html);
+    if (handle) return { result: 'public', handle };
+    return { result: (await postCrawlerStillWorks(signal)) ? 'not_found' : 'unknown' };
+  },
+};
+
 /** Local and e2e only, so tests never call Instagram. The handle's prefix picks the answer. */
 export const fake: InstagramStrategy = {
   name: 'fake',
@@ -85,4 +148,19 @@ export const fake: InstagramStrategy = {
   },
 };
 
+/**
+ * Local and e2e only. The shortcode, lowercased, is the owner's name, and its prefix picks the answer:
+ * "nosuch" and "private" can't be read, "unknown" and "exists" act as if Instagram is blocking us.
+ */
+export const fakePost: PostStrategy = {
+  name: 'fakePost',
+  async check(url) {
+    const code = /\/([^/]+)\/?$/.exec(url)?.[1].toLowerCase() ?? '';
+    if (/^(nosuch|private)/.test(code)) return { result: 'not_found' };
+    if (/^(unknown|exists)/.test(code) || !HANDLE_RE.test(code)) return { result: 'unknown' };
+    return { result: 'public', handle: code };
+  },
+};
+
 export const STRATEGIES: Record<string, InstagramStrategy> = { webProfileInfo, crawlerPage, fake };
+export const POST_STRATEGIES: Record<string, PostStrategy> = { crawlerPost, fakePost };

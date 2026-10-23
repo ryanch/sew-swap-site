@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { adminUser, checkInstagram, createSwap, getJson, newUser, runId, US_ADDRESS, uniqueHandle, type User } from '../helpers/api';
+import { adminUser, checkInstagram, createSwap, getJson, newUser, postLink, runId, US_ADDRESS, uniqueHandle, type User } from '../helpers/api';
 import { nameFields } from '../helpers/signup';
 
 // What's saved per person (UserProfiles and InstagramChecks): the profile shared by every swap,
@@ -8,7 +8,7 @@ import { nameFields } from '../helpers/signup';
 // Compose sets INSTAGRAM_CHECK_MIN_SECONDS to 2; 15 checks an hour is fixed.
 const MIN_GAP_MS = 2_100;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const check = (u: User, input: string) => u.api.post('/api/me/instagram/check', { data: { input } });
+const check = (u: User, input: string, handle?: string) => u.api.post('/api/me/instagram/check', { data: { input, handle } });
 const profile = async (u: User) => getJson(u.api, '/api/me/profile');
 
 let admin: User;
@@ -22,42 +22,48 @@ test.afterAll(async () => {
   await admin.api.dispose();
 });
 
-test('a new person has an empty profile; a passing check saves the cleaned-up handle', async () => {
+test("a new person has an empty profile; a passing check saves the post's owner and the tidied link", async () => {
   const user = await newUser('profile-new');
   expect(await profile(user)).toEqual({ email: user.email, address: null, instagram: null });
 
   const handle = uniqueHandle('jo');
-  const res = await check(user, `https://instagram.com/${handle.toUpperCase()}/`);
+  const input = `instagram.com/${handle}/p/${handle}?igsh=abc123`;
+  const postUrl = `https://www.instagram.com/p/${handle}/`;
+  const res = await check(user, input);
   expect(res.status()).toBe(200);
-  expect(await res.json()).toEqual({
-    input: `https://instagram.com/${handle.toUpperCase()}/`,
-    handle,
-    changed: true,
-    result: 'public',
-    retryAfterSeconds: 2,
-  });
+  expect(await res.json()).toEqual({ input, postUrl, handle, result: 'public', retryAfterSeconds: 2 });
   const saved = await profile(user);
   expect(saved.address).toBeNull();
-  expect(saved.instagram).toEqual({ handle, result: 'public', checkedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/), current: true });
+  expect(saved.instagram).toEqual({
+    handle,
+    postUrl,
+    result: 'public',
+    checkedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/),
+    current: true,
+  });
   await user.api.dispose();
 });
 
-test('checks must be a couple of seconds apart, and a name that is not valid is not counted', async () => {
+test('checks must be a couple of seconds apart, and a link that is not valid is not counted', async () => {
   const user = await newUser('profile-gap');
   await checkInstagram(user.api);
 
-  const tooSoon = await check(user, uniqueHandle());
+  const tooSoon = await check(user, postLink(uniqueHandle()));
   expect(tooSoon.status()).toBe(429);
   const body = await tooSoon.json();
   expect(body.retryAfterSeconds).toBeGreaterThanOrEqual(1);
   expect(body.retryAfterSeconds).toBeLessThanOrEqual(2);
   expect(tooSoon.headers()['retry-after']).toBe(String(body.retryAfterSeconds));
-  // An invalid name is refused before the rate limit, and doesn't use up a check.
-  expect((await check(user, 'not a handle!')).status()).toBe(400);
+  // A bad link, or a bad fallback name, is refused before the rate limit, and doesn't use up a check.
+  const name = await check(user, 'https://www.instagram.com/jane/');
+  expect(name.status()).toBe(400);
+  expect((await name.json()).error).toMatch(/We need a link to one of your posts/);
+  expect((await check(user, 'not a link!')).status()).toBe(400);
+  expect((await check(user, postLink(uniqueHandle('unknown')), 'not a handle!')).status()).toBe(400);
 
   await wait(MIN_GAP_MS);
   const handle = uniqueHandle('later');
-  expect((await check(user, handle)).status()).toBe(200);
+  expect((await check(user, postLink(handle))).status()).toBe(200);
   // The refused check didn't change what's saved.
   expect((await profile(user)).instagram.handle).toBe(handle);
   await user.api.dispose();
@@ -69,13 +75,20 @@ test('each result is saved: a failed check clears the handle but keeps the addre
   await checkInstagram(user.api);
   expect((await user.api.put(`/api/swaps/${swapId}/membership`, { data: { address: US_ADDRESS } })).status()).toBe(200);
 
+  // A post Instagram won't show us asks for the name, and changes nothing until it's sent.
+  await wait(MIN_GAP_MS);
+  const blocked = await check(user, postLink(uniqueHandle('unknown')));
+  expect(await blocked.json()).toMatchObject({ handle: null, result: 'needs_handle' });
+  expect((await profile(user)).instagram).toMatchObject({ result: 'public' });
+
+  // With the name, an unreadable post falls back to checking the name. A private account's post can't be read at all.
   const results: [string, { handle: string; result: string } | null][] = [];
   for (const prefix of ['exists', 'unknown', 'private', 'public', 'nosuch']) {
     await wait(MIN_GAP_MS);
     const handle = uniqueHandle(prefix);
-    const res = await check(user, handle);
+    const res = await check(user, postLink(handle), handle);
     expect(res.status()).toBe(200);
-    expect((await res.json()).result).toBe(prefix === 'public' ? 'public' : prefix === 'nosuch' ? 'not_found' : prefix);
+    expect((await res.json()).result).toBe(prefix === 'exists' || prefix === 'unknown' || prefix === 'public' ? prefix : 'not_found');
     const { instagram, address } = await profile(user);
     expect(address).toEqual(US_ADDRESS);
     results.push([prefix, instagram && { handle: instagram.handle === handle ? 'same' : instagram.handle, result: instagram.result }]);
@@ -106,7 +119,7 @@ test('one profile is shared by every swap: it prefills the next sign-up, and cha
   expect(saved).toEqual({
     email: user.email,
     address: home,
-    instagram: { handle, result: 'public', checkedAt: expect.any(String), current: true },
+    instagram: { handle, postUrl: `https://www.instagram.com/p/${handle}/`, result: 'public', checkedAt: expect.any(String), current: true },
   });
   expect((await user.api.put(`/api/swaps/${second}/membership`, { data: { address: saved.address } })).status()).toBe(200);
 
@@ -128,11 +141,11 @@ test('at most 15 checks an hour, passing or not', async () => {
   const user = await newUser('profile-hourly');
   for (let i = 0; i < 15; i++) {
     if (i) await wait(MIN_GAP_MS);
-    const res = await check(user, uniqueHandle(i % 3 === 0 ? 'nosuch' : 'hourly'));
+    const res = await check(user, postLink(uniqueHandle(i % 3 === 0 ? 'nosuch' : 'hourly')));
     expect(res.status(), `check ${i + 1}`).toBe(200);
   }
   await wait(MIN_GAP_MS);
-  const limited = await check(user, uniqueHandle('hourly'));
+  const limited = await check(user, postLink(uniqueHandle('hourly')));
   expect(limited.status()).toBe(429);
   const { retryAfterSeconds } = await limited.json();
   // About an hour from the first check.
@@ -140,6 +153,6 @@ test('at most 15 checks an hour, passing or not', async () => {
   expect(retryAfterSeconds).toBeLessThanOrEqual(3600);
   // Someone else isn't affected.
   const other = await newUser('profile-hourly-other');
-  expect((await check(other, uniqueHandle())).status()).toBe(200);
+  expect((await check(other, postLink(uniqueHandle()))).status()).toBe(200);
   await Promise.all([user.api.dispose(), other.api.dispose()]);
 });

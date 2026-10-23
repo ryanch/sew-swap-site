@@ -112,6 +112,24 @@ button:disabled { opacity: 0.55; cursor: default; }
 }
 .warning p { margin: 0 0 8px; }
 .warning ul { margin: 0 0 8px; padding-left: 20px; }
+/* A button that reads like a link, for help that sits next to a field. Still a comfortable tap target. */
+button.link-button {
+  display: block; min-height: 44px; padding: 8px 0; margin: 0 0 8px;
+  background: none; border: none; outline: none; box-shadow: none;
+  color: var(--teal); font-size: 1.05rem; text-decoration: underline; text-align: left;
+}
+.warning button.link-button { display: inline; min-height: 0; padding: 0; margin: 0; }
+button.link-button:hover:not(:disabled) { transform: none; box-shadow: none; text-decoration-thickness: 2px; }
+.help-panel {
+  background: var(--teal-pale); border: 2px dashed var(--teal); border-radius: var(--radius);
+  padding: 14px 18px; margin-bottom: 12px; font-size: 1.1rem;
+}
+.help-panel h3 { margin: 0 0 6px; font-size: 1.2rem; }
+.help-panel ol, .help-panel ul { margin: 0 0 14px; padding-left: 24px; }
+.help-panel li + li { margin-top: 6px; }
+.help-panel p { overflow-wrap: anywhere; }
+.row.wrap { flex-wrap: wrap; }
+.row.wrap input { min-width: 220px; }
 .big-warning { border-width: 3px; border-left-width: 10px; font-size: 1.15rem; }
 .badge {
   display: inline-block; background: var(--gold-pale); border: 1.5px dashed var(--gold);

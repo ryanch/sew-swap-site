@@ -33,8 +33,13 @@ export const config = {
     cookieSecure: appBaseUrl.startsWith('https://'),
   },
   instagram: {
-    // Tried in order; see src/instagram/strategies.ts. `fake` is for local development only.
+    // Tried in order on a typed name, when the post strategies get no answer. `fake` is for local development only.
     strategies: (process.env.INSTAGRAM_CHECK_STRATEGIES ?? 'webProfileInfo,crawlerPage')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+    // Tried in order on the post link; see src/instagram/strategies.ts. `fakePost` is for local development only.
+    postStrategies: (process.env.INSTAGRAM_POST_STRATEGIES ?? 'crawlerPost')
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),

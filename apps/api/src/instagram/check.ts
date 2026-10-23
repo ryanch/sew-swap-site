@@ -41,3 +41,37 @@ export async function runStrategies(
   }
   return best;
 }
+
+/**
+ * What a post strategy learned. Instagram only shows a private account's posts to followers who are
+ * signed in, so a post we can read means a public account, and its page names the owner.
+ * A private account's post looks the same as a link to nothing: 'not_found'.
+ */
+export type PostResult = { result: 'public'; handle: string } | { result: 'not_found' | 'unknown' };
+
+/** One way of reading a post's page. Like `InstagramStrategy`, a broken one returns 'unknown'. */
+export interface PostStrategy {
+  name: string;
+  check(url: string, signal: AbortSignal): Promise<PostResult>;
+}
+
+export type PostOutcome = PostResult & { strategy: string | null };
+
+/** Runs post strategies in order. The first 'public' or 'not_found' wins. */
+export async function runPostStrategies(
+  strategies: PostStrategy[],
+  url: string,
+  { timeoutMs = 6000, log }: { timeoutMs?: number; log?: Logger } = {},
+): Promise<PostOutcome> {
+  for (const strategy of strategies) {
+    let outcome: PostResult;
+    try {
+      outcome = await strategy.check(url, AbortSignal.timeout(timeoutMs));
+    } catch (err) {
+      log?.warn({ err, strategy: strategy.name, url }, 'Instagram post strategy failed');
+      continue;
+    }
+    if (outcome.result !== 'unknown') return { ...outcome, strategy: strategy.name };
+  }
+  return { result: 'unknown', strategy: null };
+}

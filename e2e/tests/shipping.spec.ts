@@ -1,7 +1,7 @@
 import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import { signIn } from '../helpers/auth';
 import { emailSubjects, listEmailIds, uniqueEmail, waitForEmail } from '../helpers/mailpit';
-import { nameFields, uniqueHandle, US_ADDRESS } from '../helpers/signup';
+import { nameFields, postLink, uniqueHandle, US_ADDRESS } from '../helpers/signup';
 
 const ADMIN_EMAIL = 'admin@example.test';
 
@@ -33,7 +33,7 @@ async function newMaker(browser: Browser, key: string): Promise<Maker> {
   const context = await browser.newContext({ locale: 'en-US' });
   const page = await context.newPage();
   await signIn(page, email);
-  expect((await page.request.post('/api/me/instagram/check', { data: { input: uniqueHandle(key.toLowerCase()) } })).status()).toBe(200);
+  expect((await page.request.post('/api/me/instagram/check', { data: { input: postLink(uniqueHandle(key.toLowerCase())) } })).status()).toBe(200);
   const name = `${key} ${run}`;
   const joined = await page.request.put(`/api/swaps/${swapId}/membership`, { data: { address: { ...US_ADDRESS, ...nameFields(name) } } });
   expect(joined.status()).toBe(200);

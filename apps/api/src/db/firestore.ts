@@ -16,7 +16,7 @@ export const col = {
   userEmails: db.collection('userEmails'), //        {Email}: UserId (keeps emails unique)
   userGoogleSubs: db.collection('userGoogleSubs'), // {GoogleSub}: UserId (keeps Google ids unique)
   userProfiles: db.collection('userProfiles'), //    {UserId}: address and Instagram columns
-  instagramChecks: db.collection('instagramChecks'), // {CheckId}: UserId, CheckedAt, ExpiresAt, Input, Handle, Result, Strategy
+  instagramChecks: db.collection('instagramChecks'), // {CheckId}: UserId, CheckedAt, ExpiresAt, Input (post link), Handle, Result, Strategy
   sessions: db.collection('sessions'), //            {SessionIdHash}: UserId, CreatedAt, ExpiresAt, ...
   loginTokens: db.collection('loginTokens'), //      {TokenId}: Email, LinkTokenHash, CodeHash, Attempts, ExpiresAt, ConsumedAt, CreatedAt
   emailLog: db.collection('emailLog'), //            {EmailId}: UserId, SentAt, Kind, SwapId, Subject, Body, Status

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, request, type APIRequestContext } from '@playwright/test';
 import { listEmailIds, uniqueEmail, waitForLoginEmail } from './mailpit';
-import { uniqueHandle, US_ADDRESS } from './signup';
+import { postLink, uniqueHandle, US_ADDRESS } from './signup';
 
 // Helpers for the data-*.spec.ts tests, which drive the API directly (no browser pages) so they
 // stay fast and check what the database keeps.
@@ -95,9 +95,12 @@ export async function createSwap(api: APIRequestContext, title: string, dates: P
   return (await res.json()).swap.swapId as string;
 }
 
-/** Passes the (fake) Instagram check with a public handle. Returns the handle. */
+/**
+ * Passes the (fake) Instagram check with a post owned by `handle`. Returns the handle. Sends the
+ * name too, so "unknown…" and "exists…" handles fall back to the name check and pass unconfirmed.
+ */
 export async function checkInstagram(api: APIRequestContext, handle = uniqueHandle()) {
-  const res = await api.post('/api/me/instagram/check', { data: { input: handle } });
+  const res = await api.post('/api/me/instagram/check', { data: { input: postLink(handle), handle } });
   expect(res.status(), `Instagram check for ${handle}`).toBe(200);
   return handle;
 }
@@ -163,4 +166,4 @@ export function parseCsv(text: string): string[][] {
   return rows;
 }
 
-export { US_ADDRESS, uniqueHandle };
+export { postLink, US_ADDRESS, uniqueHandle };

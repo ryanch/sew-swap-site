@@ -1,6 +1,6 @@
 // Instagram usernames: letters, numbers, periods and underscores, at most 30, no leading,
 // trailing or doubled period. Instagram treats them case-insensitively.
-const HANDLE_RE = /^(?!\.)(?!.*\.\.)[a-z0-9._]{1,30}(?<!\.)$/;
+export const HANDLE_RE = /^(?!\.)(?!.*\.\.)[a-z0-9._]{1,30}(?<!\.)$/;
 
 export type CleanResult = { handle: string } | { error: string };
 

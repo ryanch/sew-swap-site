@@ -1,7 +1,7 @@
 import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import { signIn } from '../helpers/auth';
 import { uniqueEmail } from '../helpers/mailpit';
-import { checkButton, fillUsAddress, uniqueHandle, US_ADDRESS } from '../helpers/signup';
+import { checkButton, fillUsAddress, postLink, uniqueHandle, US_ADDRESS } from '../helpers/signup';
 
 const ADMIN_EMAIL = 'admin@example.test';
 
@@ -49,7 +49,7 @@ async function openSwap(title: string) {
 const check = (page: Page, input: string) => page.request.post('/api/me/instagram/check', { data: { input } });
 const join = (page: Page, swapId: string, data: object) => page.request.put(`/api/swaps/${swapId}/membership`, { data });
 
-test('signing up cleans up the Instagram name and makes the person fix a bad one', async ({ browser }) => {
+test('signing up takes a link to one of your posts, with help for copying it', async ({ browser }) => {
   const user = await newSignedInUser(browser, 'signup');
   const title = `Sign-up ${Date.now()}`;
   const swapId = await openSwap(title);
@@ -63,47 +63,67 @@ test('signing up cleans up the Instagram name and makes the person fix a bad one
   await expect(joinButton).toBeDisabled();
   await fillUsAddress(page);
 
-  // A pasted profile link with a trailing space becomes the bare name, and the page says so.
-  const handle = uniqueHandle('jane');
-  const igInput = page.getByLabel('Your Instagram name');
-  await igInput.fill(`https://www.instagram.com/${handle} `);
+  // The help button opens step-by-step directions, and closes them again.
+  const helpButton = page.getByRole('button', { name: 'How do I copy a post link?' });
+  const help = page.getByRole('region', { name: 'How to copy a post link' });
+  await expect(help).toBeHidden();
+  await expect(helpButton).toHaveAttribute('aria-expanded', 'false');
+  await helpButton.click();
+  await expect(page.getByRole('button', { name: 'Hide help' })).toHaveAttribute('aria-expanded', 'true');
+  await expect(help).toContainText('On a phone, in the Instagram app');
+  await expect(help).toContainText('Copy link');
+  await expect(help).toContainText('On a computer');
+  await help.getByRole('button', { name: 'Close help' }).click();
+  await expect(help).toBeHidden();
+
+  // A name instead of a link: told what's needed, and the help opens by itself.
+  const igInput = page.getByLabel('A link to one of your Instagram posts');
+  await igInput.fill('@jane');
   await checkButton(page).click();
-  await expect(page.getByText(`We changed what you typed to ${handle}`)).toBeVisible();
-  await expect(igInput).toHaveValue(handle);
-  await expect(page.getByText(`We found @${handle} and it's public.`)).toBeVisible();
+  await expect(page.getByRole('alert')).toContainText('We need a link to one of your posts');
+  await expect(help).toBeVisible();
+  await page.getByRole('button', { name: 'Hide help' }).click();
+
+  // The link exactly as Instagram copies it: the page names the post's owner.
+  const handle = uniqueHandle('jane');
+  await igInput.fill(` ${postLink(handle)} `);
+  await checkButton(page).click();
+  await expect(page.getByText(`This post belongs to @${handle}, and the account is public.`)).toBeVisible();
+  await expect(page.getByRole('link', { name: `@${handle}` })).toHaveAttribute('href', `https://www.instagram.com/${handle}/`);
 
   // The button waits before another check, and the API refuses rapid checks too.
   await expect(page.getByRole('button', { name: /Try again in \d+s/ })).toBeDisabled();
-  const tooSoon = await check(page, handle);
+  const tooSoon = await check(page, postLink(handle));
   expect(tooSoon.status()).toBe(429);
   expect((await tooSoon.json()).retryAfterSeconds).toBeGreaterThan(0);
 
-  // A misspelled name: guidance, and no joining.
-  await igInput.fill(uniqueHandle('nosuch'));
+  // A link we can't open: guidance, the help again, and no joining.
+  await igInput.fill(postLink(uniqueHandle('nosuch')));
   await expect(joinButton).toBeDisabled();
   await expect(checkButton(page)).toBeEnabled({ timeout: 15_000 });
   await checkButton(page).click();
   const alert = page.getByRole('alert');
-  await expect(alert).toContainText("We couldn't find a public Instagram account");
-  await expect(alert).toContainText('Check the spelling');
+  await expect(alert).toContainText("We couldn't open that post.");
+  await expect(alert).toContainText('Copy the link again');
   await expect(alert).toContainText('needs to be public');
+  await expect(help).toBeVisible();
   await expect(joinButton).toBeDisabled();
 
-  // A private account: the same guidance. The failed check also clears the earlier pass on the server.
-  await igInput.fill(uniqueHandle('private'));
+  // A private account's post looks the same. The failed check also clears the earlier pass on the server.
+  await igInput.fill(postLink(uniqueHandle('private')));
   await expect(page.getByRole('button', { name: 'Try again' })).toBeEnabled({ timeout: 15_000 });
   await page.getByRole('button', { name: 'Try again' }).click();
-  await expect(page.getByRole('alert')).toContainText('is a private account');
+  await expect(page.getByRole('alert')).toContainText("We couldn't open that post.");
   await expect(joinButton).toBeDisabled();
   const sneaky = await join(page, swapId, { address: US_ADDRESS });
   expect(sneaky.status()).toBe(400);
   expect((await sneaky.json()).error).toMatch(/Instagram/);
 
   // Fixed: it joins.
-  await igInput.fill(handle);
+  await igInput.fill(postLink(handle));
   await expect(checkButton(page)).toBeEnabled({ timeout: 15_000 });
   await checkButton(page).click();
-  await expect(page.getByText(`We found @${handle} and it's public.`)).toBeVisible();
+  await expect(page.getByText(`This post belongs to @${handle}, and the account is public.`)).toBeVisible();
   await joinButton.click();
   await expect(page.getByText("You've joined this swap.")).toBeVisible();
 
@@ -118,15 +138,15 @@ test('signing up cleans up the Instagram name and makes the person fix a bad one
   await page.goto(`/swaps/${nextId}/join`);
   await expect(page.getByLabel('Street address')).toHaveValue(US_ADDRESS.line1);
   await expect(page.getByLabel('State')).toHaveValue(US_ADDRESS.region);
-  await expect(igInput).toHaveValue(handle);
-  await expect(page.getByText(`We found @${handle} and it's public.`)).toBeVisible();
+  await expect(igInput).toHaveValue(`https://www.instagram.com/p/${handle}/`);
+  await expect(page.getByText(`This post belongs to @${handle}, and the account is public.`)).toBeVisible();
   await page.getByRole('button', { name: 'Join this swap' }).click();
   await expect(page.getByText("You've joined this swap.")).toBeVisible();
 
   await user.context.close();
 });
 
-test("an Instagram we can't confirm needs the person to say it's public, and is flagged", async ({ browser }) => {
+test("when Instagram won't show the post, the person types their name, says it's public, and is flagged", async ({ browser }) => {
   const user = await newSignedInUser(browser, 'unconfirmed');
   const swapId = await openSwap(`Unconfirmed ${Date.now()}`);
   const { page } = user;
@@ -134,10 +154,18 @@ test("an Instagram we can't confirm needs the person to say it's public, and is 
 
   await page.goto(`/swaps/${swapId}/join`);
   await fillUsAddress(page);
-  await page.getByLabel('Your Instagram name').fill(handle);
+  await page.getByLabel('A link to one of your Instagram posts').fill(postLink(handle));
+  await checkButton(page).click();
+  await expect(page.getByText("Instagram isn't answering right now.")).toBeVisible();
+  const joinButton = page.getByRole('button', { name: 'Join this swap' });
+  await expect(joinButton).toBeDisabled();
+  await expect(checkButton(page)).toBeDisabled();
+
+  await page.getByLabel('Your Instagram name').fill(`@${handle}`);
+  await expect(checkButton(page)).toBeEnabled({ timeout: 15_000 });
   await checkButton(page).click();
   await expect(page.getByText(`We couldn't confirm that @${handle} is public.`)).toBeVisible();
-  const joinButton = page.getByRole('button', { name: 'Join this swap' });
+  await expect(page.getByLabel('Your Instagram name')).toHaveValue(handle);
   await expect(joinButton).toBeDisabled();
 
   // The API insists on the box too.
@@ -165,12 +193,12 @@ test('joining needs a valid address for the country and a checked Instagram', as
   expect(unchecked.status()).toBe(400);
   expect((await unchecked.json()).error).toMatch(/Instagram/);
 
-  // Not an Instagram name at all: refused before anyone asks Instagram.
+  // Not an Instagram link at all: refused before anyone asks Instagram.
   const bad = await check(page, 'jane smith');
   expect(bad.status()).toBe(400);
-  expect((await bad.json()).error).toMatch(/letters, numbers, periods and underscores/);
+  expect((await bad.json()).error).toMatch(/doesn't look like a link to an Instagram post/);
 
-  expect((await check(page, `@${uniqueHandle()}`)).status()).toBe(200);
+  expect((await check(page, postLink(uniqueHandle()))).status()).toBe(200);
   const expectProblem = async (address: object, message: RegExp) => {
     const res = await join(page, swapId, { address });
     expect(res.status()).toBe(400);

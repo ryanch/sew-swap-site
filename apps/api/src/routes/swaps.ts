@@ -171,10 +171,10 @@ export async function swapRoutes(app: FastifyInstance) {
         const checked = validateAddress(body.address);
         if ('error' in checked) throw new Problem(checked.error);
         const profile = profileSnap.exists ? (profileSnap.data() as ProfileDoc) : null;
-        if (!profile?.InstagramStatus) throw new Problem('Please check your Instagram name before joining.');
+        if (!profile?.InstagramStatus) throw new Problem('Please check your Instagram before joining.');
         const freshSince = Date.now() - config.instagram.checkValidDays * 24 * 60 * 60 * 1000;
         if (!profile.InstagramCheckedAt || profile.InstagramCheckedAt.toMillis() <= freshSince) {
-          throw new Problem('Please check your Instagram name again before joining.');
+          throw new Problem('Please check your Instagram again before joining.');
         }
         const isPublic = profile.InstagramStatus === 'public';
         if (!isPublic && body.instagramPublicConfirmed !== true) {

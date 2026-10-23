@@ -5,8 +5,10 @@ import { requireAuth } from '../auth/plugin';
 import { config } from '../config';
 import { col, db, now, toIso } from '../db/firestore';
 import type { ProfileDoc } from '../db/people';
-import { checkInstagram } from '../instagram';
+import { checkInstagram, checkInstagramPost } from '../instagram';
+import type { IgResult } from '../instagram/check';
 import { cleanInstagramHandle } from '../instagram/handle';
+import { parsePostLink } from '../instagram/post';
 import type { Address } from '../profile/address';
 
 /** Checks are kept this long (a TTL policy on ExpiresAt deletes them), then forgotten. */
@@ -36,6 +38,7 @@ export async function readProfile(tx: Transaction | undefined, userId: string): 
     Region: p.Region ?? null,
     PostalCode: p.PostalCode ?? null,
     InstagramHandle: p.InstagramHandle ?? null,
+    InstagramPostUrl: p.InstagramPostUrl ?? null,
     InstagramStatus: (p.InstagramStatus as ProfileRow['InstagramStatus']) ?? null,
     InstagramCheckedAt: toIso(p.InstagramCheckedAt),
     InstagramFresh: !!p.InstagramCheckedAt && p.InstagramCheckedAt.toMillis() > Date.now() - validMs,
@@ -77,7 +80,7 @@ export function addressColumns(a: Address) {
  * Rate limit for Instagram checks, decided and recorded in one transaction so parallel
  * requests can't slip past it. Returns the seconds to wait, or null with the new check's id.
  */
-async function startCheck(userId: string, input: string, handle: string) {
+async function startCheck(userId: string, input: string, handle: string | null) {
   const { minSecondsBetweenChecks, maxChecksPerHour } = config.instagram;
   return db.runTransaction(async (tx) => {
     const profileRef = col.userProfiles.doc(userId);
@@ -124,12 +127,20 @@ export async function profileRoutes(app: FastifyInstance) {
       address: p?.Country ? addressView(p) : null,
       instagram:
         p?.InstagramHandle && p.InstagramStatus
-          ? { handle: p.InstagramHandle, result: p.InstagramStatus, checkedAt: p.InstagramCheckedAt, current: !!p.InstagramFresh }
+          ? {
+              handle: p.InstagramHandle,
+              postUrl: p.InstagramPostUrl,
+              result: p.InstagramStatus,
+              checkedAt: p.InstagramCheckedAt,
+              current: !!p.InstagramFresh,
+            }
           : null,
     };
   });
 
-  app.post<{ Body: { input: string } }>(
+  // `input` is a link to one of the person's posts. If Instagram won't show us the post, the answer is
+  // 'needs_handle', and the page asks for their name and sends it as `handle` with the same link.
+  app.post<{ Body: { input: string; handle?: string } }>(
     '/api/me/instagram/check',
     {
       ...auth,
@@ -138,18 +149,23 @@ export async function profileRoutes(app: FastifyInstance) {
           type: 'object',
           required: ['input'],
           additionalProperties: false,
-          properties: { input: { type: 'string', maxLength: 300 } },
+          properties: { input: { type: 'string', maxLength: 300 }, handle: { type: 'string', maxLength: 300 } },
         },
       },
     },
     async (req, reply) => {
       const { input } = req.body;
       const userId = req.user!.userId;
-      const cleaned = cleanInstagramHandle(input);
-      if ('error' in cleaned) return reply.code(400).send({ error: cleaned.error });
-      const { handle } = cleaned;
+      const post = parsePostLink(input);
+      if ('error' in post) return reply.code(400).send({ error: post.error });
+      let typed: string | null = null;
+      if (req.body.handle !== undefined) {
+        const cleaned = cleanInstagramHandle(req.body.handle);
+        if ('error' in cleaned) return reply.code(400).send({ error: cleaned.error });
+        typed = cleaned.handle;
+      }
 
-      const gate = await startCheck(userId, input, handle);
+      const gate = await startCheck(userId, input, typed);
       if (gate.checkId === null) {
         return reply
           .code(429)
@@ -160,28 +176,43 @@ export async function profileRoutes(app: FastifyInstance) {
           });
       }
 
-      const { result, strategy } = await checkInstagram(handle, req.log);
+      const fromPost = await checkInstagramPost(post.url, req.log);
+      let handle: string | null = fromPost.result === 'public' ? fromPost.handle : null;
+      let result: IgResult | 'needs_handle' = fromPost.result;
+      let strategy = fromPost.strategy && `post:${fromPost.strategy}`;
+      if (fromPost.result === 'unknown') {
+        if (typed) {
+          ({ result, strategy } = await checkInstagram(typed, req.log));
+          handle = typed;
+        } else {
+          result = 'needs_handle';
+        }
+      }
+
       const passed = result === 'public' || result === 'exists' || result === 'unknown';
       const batch = db.batch();
-      batch.update(col.instagramChecks.doc(gate.checkId), { Result: result, Strategy: strategy });
-      // A failed check clears the saved handle, so an earlier pass can't be used to join with a typo.
-      batch.set(
-        col.userProfiles.doc(userId),
-        {
-          UserId: userId,
-          InstagramHandle: passed ? handle : null,
-          InstagramStatus: passed ? result : null,
-          InstagramCheckedAt: passed ? now() : null,
-          InstagramStrategy: passed ? strategy : null,
-          UpdatedAt: now(),
-        },
-        { merge: true },
-      );
+      batch.update(col.instagramChecks.doc(gate.checkId), { Handle: handle, Result: result, Strategy: strategy });
+      // A failed check clears the saved handle, so an earlier pass can't be used to join with someone else's post.
+      if (result !== 'needs_handle') {
+        batch.set(
+          col.userProfiles.doc(userId),
+          {
+            UserId: userId,
+            InstagramHandle: passed ? handle : null,
+            InstagramPostUrl: passed ? post.url : null,
+            InstagramStatus: passed ? result : null,
+            InstagramCheckedAt: passed ? now() : null,
+            InstagramStrategy: passed ? strategy : null,
+            UpdatedAt: now(),
+          },
+          { merge: true },
+        );
+      }
       await batch.commit();
       return {
         input,
+        postUrl: post.url,
         handle,
-        changed: handle !== input,
         result,
         retryAfterSeconds: config.instagram.minSecondsBetweenChecks,
       };

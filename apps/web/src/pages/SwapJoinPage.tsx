@@ -4,12 +4,13 @@ import { api, ApiError } from '../api';
 import { CA_PROVINCES, COUNTRIES, EMPTY_ADDRESS, US_STATES, type Address } from '../swaps/address';
 import { instagramUrl, type SignUpStatus, type Swap } from '../swaps/swaps';
 
-type IgResult = 'public' | 'private' | 'not_found' | 'exists' | 'unknown';
-type Check = { handle: string; result: IgResult; changed: boolean; input: string };
+type IgResult = 'public' | 'private' | 'not_found' | 'exists' | 'unknown' | 'needs_handle';
+/** A check of a post link. `typed` is true when the person also typed their name because Instagram wouldn't show us the post. */
+type Check = { input: string; handle: string | null; result: IgResult; typed: boolean };
 type Profile = {
   email: string;
   address: Address | null;
-  instagram: { handle: string; result: IgResult; current: boolean } | null;
+  instagram: { handle: string; postUrl: string | null; result: IgResult; current: boolean } | null;
 };
 type SwapData = { swap: Swap; signUpStatus: SignUpStatus; membership: { joinedAt: string } | null };
 
@@ -37,6 +38,9 @@ export default function SwapJoinPage() {
   const [email, setEmail] = useState('');
   const [address, setAddress] = useState<Address>(EMPTY_ADDRESS);
   const [igInput, setIgInput] = useState('');
+  const [handleInput, setHandleInput] = useState('');
+  const [askHandle, setAskHandle] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [check, setCheck] = useState<Check | null>(null);
   const [needsRecheck, setNeedsRecheck] = useState(false);
   const [confirmPublic, setConfirmPublic] = useState(false);
@@ -57,11 +61,18 @@ export default function SwapJoinPage() {
         setEmail(profile.email);
         if (profile.address) setAddress(profile.address);
         if (profile.instagram) {
-          setIgInput(profile.instagram.handle);
-          if (profile.instagram.current) {
-            const { handle, result } = profile.instagram;
-            setCheck({ handle, result, changed: false, input: handle });
+          const { handle, postUrl, result, current } = profile.instagram;
+          // Profiles from before post links have only a name, so they need a new check with a link.
+          if (postUrl && current) {
+            const typed = result !== 'public';
+            setIgInput(postUrl);
+            setCheck({ input: postUrl, handle, result, typed });
+            if (typed) {
+              setAskHandle(true);
+              setHandleInput(handle);
+            }
           } else {
+            if (postUrl) setIgInput(postUrl);
             setNeedsRecheck(true);
           }
         }
@@ -75,26 +86,33 @@ export default function SwapJoinPage() {
   const set = (key: keyof Address) => (value: string) =>
     setAddress((a) => ({ ...a, [key]: value, ...(key === 'country' ? { region: '' } : {}) }));
 
-  // A result only counts for the name it was about; typing something new needs a new check.
-  const current = check && check.handle === igInput.trim() ? check : null;
+  // A result only counts for the link (and typed name) it was about; changing either needs a new check.
+  const current =
+    check && check.input === igInput.trim() && (!check.typed || check.handle === handleInput.trim()) ? check : null;
   const igOk = !!current && PASSING.includes(current.result) && (current.result === 'public' || confirmPublic);
 
   async function checkInstagram() {
     setChecking(true);
     setIgError('');
     setNeedsRecheck(false);
+    const input = igInput.trim();
+    const typed = askHandle && !!handleInput.trim();
     try {
-      const r = await api<Check & { retryAfterSeconds: number }>('/api/me/instagram/check', {
+      const r = await api<{ handle: string | null; result: IgResult; retryAfterSeconds: number }>('/api/me/instagram/check', {
         method: 'POST',
-        body: { input: igInput },
+        body: typed ? { input, handle: handleInput } : { input },
       });
-      setIgInput(r.handle);
-      setCheck(r);
+      setIgInput(input);
+      if (typed && r.handle) setHandleInput(r.handle);
+      setCheck({ input, handle: r.handle, result: r.result, typed });
+      if (r.result === 'needs_handle') setAskHandle(true);
+      if (r.result === 'not_found') setHelpOpen(true);
       setConfirmPublic(false);
       setCooldownUntil(Date.now() + r.retryAfterSeconds * 1000);
     } catch (e) {
       setCheck(null);
       setIgError((e as Error).message);
+      if (e instanceof ApiError && e.status === 400) setHelpOpen(true);
       const retry = e instanceof ApiError ? Number(e.data.retryAfterSeconds) : NaN;
       if (retry > 0) setCooldownUntil(Date.now() + retry * 1000);
     } finally {
@@ -151,7 +169,7 @@ export default function SwapJoinPage() {
     ? 'Checking…'
     : waitSeconds > 0
       ? `Try again in ${waitSeconds}s`
-      : check && !PASSING.includes(check.result)
+      : check && !PASSING.includes(check.result) && check.result !== 'needs_handle'
         ? 'Try again'
         : 'Check my Instagram';
 
@@ -235,38 +253,76 @@ export default function SwapJoinPage() {
         <fieldset className="stack">
           <legend>Instagram</legend>
           <p className="muted small">
-            Your swap partner will look at your Instagram for ideas about what you'd like, so it needs to be a public account.
+            Your swap partner will look at your Instagram for ideas about what you'd like, so it needs to be a public
+            account. To show us which account is yours, paste a link to any one of your posts.
           </p>
           <div>
-            <label htmlFor="instagram">Your Instagram name</label>
-            <div className="row">
+            <label htmlFor="instagramPost">A link to one of your Instagram posts</label>
+            <button
+              type="button"
+              className="link-button"
+              aria-expanded={helpOpen}
+              aria-controls="instagram-help"
+              onClick={() => setHelpOpen((open) => !open)}
+            >
+              {helpOpen ? 'Hide help' : 'How do I copy a post link?'}
+            </button>
+            {helpOpen && <InstagramHelp onClose={() => setHelpOpen(false)} />}
+            <div className="row wrap">
               <input
-                id="instagram"
+                id="instagramPost"
+                inputMode="url"
                 maxLength={300}
                 autoCapitalize="none"
                 autoCorrect="off"
                 spellCheck={false}
-                placeholder="yourname"
+                placeholder="https://www.instagram.com/p/…"
                 value={igInput}
                 onChange={(e) => setIgInput(e.target.value)}
               />
               <button
                 type="button"
                 className="secondary"
-                disabled={checking || waitSeconds > 0 || !igInput.trim()}
+                disabled={checking || waitSeconds > 0 || !igInput.trim() || (askHandle && !handleInput.trim())}
                 onClick={checkInstagram}
               >
                 {checkLabel}
               </button>
             </div>
           </div>
+          {askHandle && (
+            <div>
+              <label htmlFor="instagramName">Your Instagram name</label>
+              <p className="muted small">
+                Instagram isn't letting us look at posts right now, so please type your Instagram name too, then press
+                Check my Instagram.
+              </p>
+              <input
+                id="instagramName"
+                maxLength={300}
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                placeholder="yourname"
+                value={handleInput}
+                onChange={(e) => setHandleInput(e.target.value)}
+              />
+            </div>
+          )}
           {needsRecheck && !current && <p className="muted">It's been a while, so please check your Instagram again.</p>}
           {igError && (
             <p className="error" role="alert">
               {igError}
             </p>
           )}
-          {current && <InstagramResult check={current} confirmPublic={confirmPublic} setConfirmPublic={setConfirmPublic} />}
+          {current && (
+            <InstagramResult
+              check={current}
+              confirmPublic={confirmPublic}
+              setConfirmPublic={setConfirmPublic}
+              showHelp={() => setHelpOpen(true)}
+            />
+          )}
         </fieldset>
 
         {error && (
@@ -283,46 +339,104 @@ export default function SwapJoinPage() {
   );
 }
 
+/** Step-by-step directions for copying a post link, on a phone and on a computer. */
+function InstagramHelp({ onClose }: { onClose: () => void }) {
+  return (
+    <div id="instagram-help" className="help-panel" role="region" aria-label="How to copy a post link">
+      <h3>On a phone, in the Instagram app</h3>
+      <ol>
+        <li>Open Instagram and tap your picture at the bottom right.</li>
+        <li>Tap any one of your posts.</li>
+        <li>
+          Tap the <strong>paper airplane</strong> (Share) button under the photo.
+        </li>
+        <li>
+          In the row of options that appears, tap <strong>Copy link</strong>. You may need to slide the row to find it.
+        </li>
+        <li>
+          Come back to this page. Press and hold in the box below, then tap <strong>Paste</strong>.
+        </li>
+      </ol>
+      <h3>On a computer</h3>
+      <ol>
+        <li>Go to instagram.com and click your picture to open your profile.</li>
+        <li>Click any one of your posts.</li>
+        <li>
+          Click the <strong>paper airplane</strong> or the <strong>⋯</strong> button, then <strong>Copy link</strong>.
+          Or copy the address at the top of the browser.
+        </li>
+        <li>
+          Click in the box below and paste: press <strong>Ctrl+V</strong>, or <strong>⌘+V</strong> on a Mac.
+        </li>
+      </ol>
+      <p>The link will look like this: https://www.instagram.com/p/ABC123xyz/</p>
+      <ul>
+        <li>Any post from your own account works, including a reel.</li>
+        <li>
+          Your account needs to be public. In Instagram, go to Settings, then Account privacy, and turn off Private
+          account.
+        </li>
+      </ul>
+      <button type="button" className="secondary" onClick={onClose}>
+        Close help
+      </button>
+    </div>
+  );
+}
+
 function InstagramResult({
   check,
   confirmPublic,
   setConfirmPublic,
+  showHelp,
 }: {
   check: Check;
   confirmPublic: boolean;
   setConfirmPublic: (v: boolean) => void;
+  showHelp: () => void;
 }) {
-  const link = (
+  const link = check.handle && (
     <a href={instagramUrl(check.handle)} target="_blank" rel="noreferrer">
       @{check.handle}
     </a>
   );
   return (
     <>
-      {check.changed && (
-        <p className="notice" role="status">
-          We changed what you typed to <strong>{check.handle}</strong>, which is the name Instagram uses.
-        </p>
-      )}
       {check.result === 'public' && (
         <p className="notice" role="status">
-          ✓ We found {link} and it's public.
+          ✓ This post belongs to {link}, and the account is public. Not you? Paste a link to one of your own posts.
+        </p>
+      )}
+      {check.result === 'needs_handle' && (
+        <p className="warning" role="status">
+          Instagram isn't answering right now. Please type your Instagram name below the link.
         </p>
       )}
       {(check.result === 'not_found' || check.result === 'private') && (
         <div className="warning" role="alert">
           <p>
             <strong>
-              {check.result === 'private'
+              {check.typed && check.result === 'private'
                 ? `@${check.handle} is a private account.`
-                : `We couldn't find a public Instagram account called @${check.handle}.`}
+                : check.typed
+                  ? `We couldn't find a public Instagram account called @${check.handle}.`
+                  : "We couldn't open that post."}
             </strong>
           </p>
           <ul>
-            <li>
-              Check the spelling of your Instagram name. In the Instagram app, tap your picture at the bottom right; your
-              name is at the top of the screen.
-            </li>
+            {check.typed ? (
+              <li>
+                Check the spelling of your Instagram name. In the Instagram app, tap your picture at the bottom right;
+                your name is at the top of the screen.
+              </li>
+            ) : (
+              <li>
+                Copy the link again, the whole thing, from one of your own posts.{' '}
+                <button type="button" className="link-button" onClick={showHelp}>
+                  Show me how
+                </button>
+              </li>
+            )}
             <li>
               Your swap partner will look at your Instagram for inspiration, so your account needs to be public. In
               Instagram, go to Settings, then Account privacy, and turn off Private account.
