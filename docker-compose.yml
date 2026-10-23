@@ -3,12 +3,16 @@
 name: sew-swap
 
 services:
-  spanner:
-    image: gcr.io/cloud-spanner-emulator/emulator:latest
-    # platform: linux/amd64   # uncomment if your Apple Silicon Mac can't pull an arm64 image
+  firestore:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+    command: gcloud emulators firestore start --host-port=0.0.0.0:8081
     ports:
-      - "9010:9010" # gRPC (used by client libraries)
-      - "9020:9020" # REST
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8081/"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
 
   mailpit:
     image: axllent/mailpit:latest
@@ -31,10 +35,7 @@ services:
       PORT: 8080
       NODE_ENV: development
       GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-sew-swap-local}
-      SPANNER_EMULATOR_HOST: spanner:9010
-      SPANNER_INSTANCE: ${SPANNER_INSTANCE:-local-instance}
-      SPANNER_DATABASE: ${SPANNER_DATABASE:-sew-swap}
-      MIGRATIONS_DIR: /migrations
+      FIRESTORE_EMULATOR_HOST: firestore:8081
       SMTP_HOST: mailpit
       SMTP_PORT: 1025
       MAIL_FROM: ${MAIL_FROM:-Sew Swap <no-reply@sewswap.local>}
@@ -51,10 +52,9 @@ services:
       INSTAGRAM_CHECK_MIN_SECONDS: ${INSTAGRAM_CHECK_MIN_SECONDS:-2}
     volumes:
       - ./apps/api/src:/app/src
-      - ./db/migrations:/migrations:ro
     depends_on:
-      spanner:
-        condition: service_started
+      firestore:
+        condition: service_healthy
       mailpit:
         condition: service_healthy
 

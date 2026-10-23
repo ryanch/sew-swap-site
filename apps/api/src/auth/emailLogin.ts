@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { Spanner } from '@google-cloud/spanner';
+import { Timestamp, type QueryDocumentSnapshot } from '@google-cloud/firestore';
 import type { FastifyRequest } from 'fastify';
 import { config } from '../config';
-import { database } from '../db/spanner';
+import { col, db, now } from '../db/firestore';
 import { sendMail } from '../email/mailer';
 import { hmac, randomCode, randomToken, safeEqual } from './crypto';
 import { createSession } from './sessions';
@@ -13,30 +13,41 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export type RequestLoginResult = { ok: true } | { ok: false; reason: 'invalid_email' | 'rate_limited' };
 export type VerifyResult = ({ ok: true; sessionToken: string } & LoginResult) | { ok: false };
 
+type TokenRow = {
+  TokenId: string;
+  Email: string;
+  CodeHash: string;
+  Attempts: number;
+  ExpiresAt: Timestamp;
+  ConsumedAt: Timestamp | null;
+  CreatedAt: Timestamp;
+};
+
+/** Unused and unexpired. */
+const isLive = (t: TokenRow) => !t.ConsumedAt && t.ExpiresAt.toMillis() > Date.now();
+const tokenRow = (d: QueryDocumentSnapshot) => d.data() as TokenRow;
+
 export async function requestLogin(rawEmail: string, ip: string): Promise<RequestLoginResult> {
   const email = normalizeEmail(rawEmail);
   if (!EMAIL_RE.test(email) || email.length > 320) return { ok: false, reason: 'invalid_email' };
 
-  const [countRows] = await database.run({
-    sql: `SELECT COUNT(*) AS n FROM LoginTokens
-          WHERE Email = @email AND CreatedAt > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR)`,
-    params: { email },
-    json: true,
-  });
-  if (Number((countRows[0] as { n: number }).n) >= config.auth.maxLoginRequestsPerHour) {
-    return { ok: false, reason: 'rate_limited' };
-  }
+  const hourAgo = Date.now() - 60 * 60 * 1000;
+  const sent = await col.loginTokens.where('Email', '==', email).get();
+  const recent = sent.docs.filter((d) => tokenRow(d).CreatedAt.toMillis() > hourAgo).length;
+  if (recent >= config.auth.maxLoginRequestsPerHour) return { ok: false, reason: 'rate_limited' };
 
   const linkToken = randomToken();
   const code = randomCode();
-  await database.table('LoginTokens').insert({
-    TokenId: randomUUID(),
+  const tokenId = randomUUID();
+  await col.loginTokens.doc(tokenId).create({
+    TokenId: tokenId,
     Email: email,
     LinkTokenHash: hmac(linkToken),
     CodeHash: hmac(`${email}:${code}`),
     Attempts: 0,
-    ExpiresAt: new Date(Date.now() + config.auth.loginTokenTtlMinutes * 60 * 1000),
-    CreatedAt: Spanner.COMMIT_TIMESTAMP,
+    ExpiresAt: Timestamp.fromMillis(Date.now() + config.auth.loginTokenTtlMinutes * 60 * 1000),
+    ConsumedAt: null,
+    CreatedAt: now(),
     RequestIp: ip.slice(0, 64),
   });
 
@@ -73,22 +84,13 @@ function sendLoginEmail(email: string, linkToken: string, code: string) {
 
 /** Redeem the magic link. Consumes the token, finds/creates the user, and opens a session atomically. */
 export async function verifyLinkToken(linkToken: string, req: FastifyRequest): Promise<VerifyResult> {
-  return database.runTransactionAsync(async (tx) => {
-    const [rows] = await tx.run({
-      sql: `SELECT TokenId, Email FROM LoginTokens
-            WHERE LinkTokenHash = @hash AND ConsumedAt IS NULL AND ExpiresAt > CURRENT_TIMESTAMP()`,
-      params: { hash: hmac(linkToken) },
-      json: true,
-    });
-    const token = rows[0] as { TokenId: string; Email: string } | undefined;
-    if (!token) {
-      await tx.end();
-      return { ok: false };
-    }
-    tx.update('LoginTokens', { TokenId: token.TokenId, ConsumedAt: Spanner.COMMIT_TIMESTAMP });
-    const login = await findOrCreateByEmail(tx, token.Email);
+  return db.runTransaction(async (tx): Promise<VerifyResult> => {
+    const found = await tx.get(col.loginTokens.where('LinkTokenHash', '==', hmac(linkToken)));
+    const token = found.docs.find((d) => isLive(tokenRow(d)));
+    if (!token) return { ok: false };
+    const login = await findOrCreateByEmail(tx, tokenRow(token).Email);
+    tx.update(token.ref, { ConsumedAt: now() });
     const sessionToken = createSession(tx, login.user.userId, req);
-    await tx.commit();
     return { ok: true, sessionToken, ...login };
   });
 }
@@ -97,30 +99,22 @@ export async function verifyLinkToken(linkToken: string, req: FastifyRequest): P
 export async function verifyCode(rawEmail: string, code: string, req: FastifyRequest): Promise<VerifyResult> {
   const email = normalizeEmail(rawEmail);
   const codeHash = hmac(`${email}:${code.trim()}`);
-  const result = await database.runTransactionAsync(async (tx) => {
-    const [rows] = await tx.run({
-      sql: `SELECT TokenId, CodeHash, Attempts FROM LoginTokens
-            WHERE Email = @email AND ConsumedAt IS NULL AND ExpiresAt > CURRENT_TIMESTAMP()
-              AND Attempts < ${config.auth.maxCodeAttempts}`,
-      params: { email },
-      json: true,
+  return db.runTransaction(async (tx): Promise<VerifyResult> => {
+    const found = await tx.get(col.loginTokens.where('Email', '==', email));
+    const tokens = found.docs.filter((d) => {
+      const t = tokenRow(d);
+      return isLive(t) && t.Attempts < config.auth.maxCodeAttempts;
     });
-    const tokens = rows as { TokenId: string; CodeHash: string; Attempts: number }[];
-    const match = tokens.find((t) => safeEqual(t.CodeHash, codeHash));
+    const match = tokens.find((d) => safeEqual(tokenRow(d).CodeHash, codeHash));
 
     if (!match) {
-      for (const t of tokens) {
-        tx.update('LoginTokens', { TokenId: t.TokenId, Attempts: Number(t.Attempts) + 1 });
-      }
-      await tx.commit();
-      return { ok: false } as const;
+      for (const d of tokens) tx.update(d.ref, { Attempts: tokenRow(d).Attempts + 1 });
+      return { ok: false };
     }
 
-    tx.update('LoginTokens', { TokenId: match.TokenId, ConsumedAt: Spanner.COMMIT_TIMESTAMP });
     const login = await findOrCreateByEmail(tx, email);
+    tx.update(match.ref, { ConsumedAt: now() });
     const sessionToken = createSession(tx, login.user.userId, req);
-    await tx.commit();
-    return { ok: true, sessionToken, ...login } as const;
+    return { ok: true, sessionToken, ...login };
   });
-  return result;
 }

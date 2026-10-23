@@ -1,39 +1,43 @@
 import { randomUUID } from 'node:crypto';
-import { Spanner, type Database, type Transaction } from '@google-cloud/spanner';
+import { Timestamp, type Transaction } from '@google-cloud/firestore';
 import type { FastifyInstance } from 'fastify';
 import { requireAuth } from '../auth/plugin';
 import { config } from '../config';
-import { database } from '../db/spanner';
+import { col, db, now, toIso } from '../db/firestore';
+import type { ProfileDoc } from '../db/people';
 import { checkInstagram } from '../instagram';
 import { cleanInstagramHandle } from '../instagram/handle';
 import type { Address } from '../profile/address';
 
-type ProfileRow = {
-  RecipientName: string | null;
-  Country: string | null;
-  AddressLine1: string | null;
-  AddressLine2: string | null;
-  City: string | null;
-  Region: string | null;
-  PostalCode: string | null;
-  InstagramHandle: string | null;
+/** Checks are kept this long (a TTL policy on ExpiresAt deletes them), then forgotten. */
+const CHECK_KEEP_DAYS = 30;
+
+type ProfileRow = Omit<ProfileDoc, 'UserId' | 'InstagramStatus' | 'InstagramCheckedAt' | 'InstagramStrategy'> & {
   InstagramStatus: 'public' | 'exists' | 'unknown' | null;
   InstagramCheckedAt: string | null;
-  InstagramFresh: boolean | null;
+  InstagramFresh: boolean;
 };
 
 /** The caller's saved sign-up info, or null. `InstagramFresh` is false once a passing check is too old to join with. */
-export async function readProfile(runner: Database | Transaction, userId: string): Promise<ProfileRow | null> {
-  const [rows] = await runner.run({
-    sql: `SELECT RecipientName, Country, AddressLine1, AddressLine2, City, Region, PostalCode,
-                 InstagramHandle, InstagramStatus,
-                 FORMAT_TIMESTAMP('%FT%TZ', InstagramCheckedAt) AS InstagramCheckedAt,
-                 InstagramCheckedAt > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL ${config.instagram.checkValidDays} DAY) AS InstagramFresh
-          FROM UserProfiles WHERE UserId = @userId`,
-    params: { userId },
-    json: true,
-  });
-  return (rows[0] as ProfileRow | undefined) ?? null;
+export async function readProfile(tx: Transaction | undefined, userId: string): Promise<ProfileRow | null> {
+  const ref = col.userProfiles.doc(userId);
+  const snap = tx ? await tx.get(ref) : await ref.get();
+  if (!snap.exists) return null;
+  const p = snap.data() as ProfileDoc;
+  const validMs = config.instagram.checkValidDays * 24 * 60 * 60 * 1000;
+  return {
+    RecipientName: p.RecipientName ?? null,
+    Country: p.Country ?? null,
+    AddressLine1: p.AddressLine1 ?? null,
+    AddressLine2: p.AddressLine2 ?? null,
+    City: p.City ?? null,
+    Region: p.Region ?? null,
+    PostalCode: p.PostalCode ?? null,
+    InstagramHandle: p.InstagramHandle ?? null,
+    InstagramStatus: (p.InstagramStatus as ProfileRow['InstagramStatus']) ?? null,
+    InstagramCheckedAt: toIso(p.InstagramCheckedAt),
+    InstagramFresh: !!p.InstagramCheckedAt && p.InstagramCheckedAt.toMillis() > Date.now() - validMs,
+  };
 }
 
 export function addressColumns(a: Address) {
@@ -54,36 +58,37 @@ export function addressColumns(a: Address) {
  */
 async function startCheck(userId: string, input: string, handle: string) {
   const { minSecondsBetweenChecks, maxChecksPerHour } = config.instagram;
-  return database.runTransactionAsync(async (tx) => {
-    const [rows] = await tx.run({
-      sql: `SELECT COUNT(*) AS N,
-                   TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), MAX(CheckedAt), MILLISECOND) AS SinceLastMs,
-                   TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), MIN(CheckedAt), SECOND) AS SinceFirst
-            FROM InstagramChecks
-            WHERE UserId = @userId AND CheckedAt > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR)`,
-      params: { userId },
-      json: true,
-    });
-    const row = rows[0] as { N: number; SinceLastMs: number | null; SinceFirst: number | null };
+  return db.runTransaction(async (tx) => {
+    const profileRef = col.userProfiles.doc(userId);
+    const [checks] = await Promise.all([tx.get(col.instagramChecks.where('UserId', '==', userId)), tx.get(profileRef)]);
+    const nowMs = Date.now();
+    const times = checks.docs
+      .map((d) => (d.get('CheckedAt') as Timestamp).toMillis())
+      .filter((ms) => ms > nowMs - 60 * 60 * 1000);
     let wait = 0;
-    if (Number(row.N) >= maxChecksPerHour) wait = 3600 - Number(row.SinceFirst);
-    else if (row.SinceLastMs !== null && Number(row.SinceLastMs) < minSecondsBetweenChecks * 1000) {
-      wait = Math.ceil((minSecondsBetweenChecks * 1000 - Number(row.SinceLastMs)) / 1000);
+    if (times.length >= maxChecksPerHour) wait = 3600 - Math.floor((nowMs - Math.min(...times)) / 1000);
+    else if (times.length > 0) {
+      const sinceLastMs = nowMs - Math.max(...times);
+      if (sinceLastMs < minSecondsBetweenChecks * 1000) {
+        wait = Math.ceil((minSecondsBetweenChecks * 1000 - sinceLastMs) / 1000);
+      }
     }
-    if (wait > 0) {
-      await tx.rollback();
-      return { retryAfterSeconds: Math.max(1, wait), checkId: null };
-    }
+    if (wait > 0) return { retryAfterSeconds: Math.max(1, wait), checkId: null };
+
     const checkId = randomUUID();
-    tx.insert('InstagramChecks', {
+    tx.create(col.instagramChecks.doc(checkId), {
       UserId: userId,
       CheckId: checkId,
-      CheckedAt: Spanner.COMMIT_TIMESTAMP,
+      CheckedAt: now(),
+      // For the TTL policy that deletes old checks.
+      ExpiresAt: Timestamp.fromMillis(Date.now() + CHECK_KEEP_DAYS * 24 * 60 * 60 * 1000),
       Input: input.slice(0, 300),
       Handle: handle,
       Result: 'pending',
+      Strategy: null,
     });
-    await tx.commit();
+    // Writing the profile doc we read makes parallel checks by one person conflict, so one retries and sees the other.
+    tx.set(profileRef, { UserId: userId, UpdatedAt: now() }, { merge: true });
     return { retryAfterSeconds: null, checkId };
   });
 }
@@ -92,7 +97,7 @@ export async function profileRoutes(app: FastifyInstance) {
   const auth = { preHandler: requireAuth };
 
   app.get('/api/me/profile', auth, async (req) => {
-    const p = await readProfile(database, req.user!.userId);
+    const p = await readProfile(undefined, req.user!.userId);
     return {
       email: req.user!.email,
       address: p?.Country
@@ -146,19 +151,22 @@ export async function profileRoutes(app: FastifyInstance) {
 
       const { result, strategy } = await checkInstagram(handle, req.log);
       const passed = result === 'public' || result === 'exists' || result === 'unknown';
-      await database.runTransactionAsync(async (tx) => {
-        tx.update('InstagramChecks', { UserId: userId, CheckId: gate.checkId, Result: result, Strategy: strategy });
-        // A failed check clears the saved handle, so an earlier pass can't be used to join with a typo.
-        tx.upsert('UserProfiles', {
+      const batch = db.batch();
+      batch.update(col.instagramChecks.doc(gate.checkId), { Result: result, Strategy: strategy });
+      // A failed check clears the saved handle, so an earlier pass can't be used to join with a typo.
+      batch.set(
+        col.userProfiles.doc(userId),
+        {
           UserId: userId,
           InstagramHandle: passed ? handle : null,
           InstagramStatus: passed ? result : null,
-          InstagramCheckedAt: passed ? Spanner.COMMIT_TIMESTAMP : null,
+          InstagramCheckedAt: passed ? now() : null,
           InstagramStrategy: passed ? strategy : null,
-          UpdatedAt: Spanner.COMMIT_TIMESTAMP,
-        });
-        await tx.commit();
-      });
+          UpdatedAt: now(),
+        },
+        { merge: true },
+      );
+      await batch.commit();
       return {
         input,
         handle,

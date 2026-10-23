@@ -1,22 +1,21 @@
-import { Spanner, type Transaction } from '@google-cloud/spanner';
+import { Timestamp, type Transaction } from '@google-cloud/firestore';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { config } from '../config';
-import { database } from '../db/spanner';
+import { col, now } from '../db/firestore';
 import { hmac, randomToken } from './crypto';
-import { rolesSubquery } from './roles';
-import { toAuthUser, type AuthUser } from './users';
+import { toAuthUser, type AuthUser, type UserRow } from './users';
 
 export const SESSION_COOKIE = 'sid';
 
-/** Buffers a Sessions insert in `tx`; returns the raw token for the cookie. */
+/** Adds a sessions doc in `tx` (a write, so call it after the transaction's reads); returns the raw token for the cookie. */
 export function createSession(tx: Transaction, userId: string, req: FastifyRequest): string {
   const token = randomToken();
   const ttlMs = config.auth.sessionTtlDays * 24 * 60 * 60 * 1000;
-  tx.insert('Sessions', {
+  tx.create(col.sessions.doc(hmac(token)), {
     SessionIdHash: hmac(token),
     UserId: userId,
-    CreatedAt: Spanner.COMMIT_TIMESTAMP,
-    ExpiresAt: new Date(Date.now() + ttlMs),
+    CreatedAt: now(),
+    ExpiresAt: Timestamp.fromMillis(Date.now() + ttlMs),
     UserAgent: (req.headers['user-agent'] ?? '').slice(0, 512),
     IpAddress: req.ip.slice(0, 64),
   });
@@ -24,19 +23,16 @@ export function createSession(tx: Transaction, userId: string, req: FastifyReque
 }
 
 export async function getUserBySessionToken(token: string): Promise<AuthUser | null> {
-  const [rows] = await database.run({
-    sql: `SELECT u.UserId, u.Email, u.DisplayName, ${rolesSubquery('u')}
-          FROM Sessions s JOIN Users u ON u.UserId = s.UserId
-          WHERE s.SessionIdHash = @hash AND s.ExpiresAt > CURRENT_TIMESTAMP()`,
-    params: { hash: hmac(token) },
-    json: true,
-  });
-  const row = rows[0] as Parameters<typeof toAuthUser>[0] | undefined;
-  return row ? toAuthUser(row) : null;
+  const session = await col.sessions.doc(hmac(token)).get();
+  if (!session.exists) return null;
+  const expiresAt = session.get('ExpiresAt') as Timestamp;
+  if (expiresAt.toMillis() <= Date.now()) return null;
+  const user = await col.users.doc(session.get('UserId') as string).get();
+  return user.exists ? toAuthUser(user.data() as UserRow) : null;
 }
 
 export async function deleteSession(token: string): Promise<void> {
-  await database.table('Sessions').deleteRows([hmac(token)]);
+  await col.sessions.doc(hmac(token)).delete();
 }
 
 export function setSessionCookie(reply: FastifyReply, token: string) {

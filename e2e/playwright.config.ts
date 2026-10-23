@@ -5,9 +5,8 @@ import { defineConfig, devices } from '@playwright/test';
 export default defineConfig({
   testDir: './tests',
   globalSetup: require.resolve('./global-setup'),
-  // The Spanner emulator runs one read-write transaction at a time and aborts the
-  // rest (the client retries with backoff, which can take seconds). Run tests
-  // serially so timings stay deterministic. Real Spanner doesn't have this limit.
+  // Tests share the admin account and its rate limits, so they run serially to keep
+  // timings deterministic.
   workers: 1,
   retries: 0,
   reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report' }]],

@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { Spanner } from '@google-cloud/spanner';
+import type { Timestamp } from '@google-cloud/firestore';
 import nodemailer from 'nodemailer';
 import { config } from '../config';
-import { database } from '../db/spanner';
+import { col, now } from '../db/firestore';
 
 export const mailer = nodemailer.createTransport({
   host: config.smtp.host,
@@ -21,31 +21,45 @@ export type Email = { subject: string; text: string; html: string };
 
 export type Recipient = { userId: string; email: string };
 
+/** The `emailLog/{EmailId}` doc. */
+export type EmailLogDoc = {
+  EmailId: string;
+  UserId: string;
+  SentAt: Timestamp;
+  Kind: EmailKind;
+  SwapId: string | null;
+  Subject: string;
+  Body: string;
+  Status: 'sending' | 'sent' | 'failed';
+};
+
 /**
- * Sends a notification and keeps a copy in EmailLog, so the person can read it again in the app.
- * The row is written first as 'sending', then marked 'sent' or 'failed'. Only 'sent' emails are shown
- * as sent. A row left at 'sending' (the server stopped mid-send) may have gone out, so it still
+ * Sends a notification and keeps a copy in the email log, so the person can read it again in the app.
+ * The entry is written first as 'sending', then marked 'sent' or 'failed'. Only 'sent' emails are shown
+ * as sent. An entry left at 'sending' (the server stopped mid-send) may have gone out, so it still
  * holds back repeat reminders rather than risk emailing someone twice.
  */
 export async function sendUserMail(to: Recipient, kind: EmailKind, swapId: string | null, email: Email) {
-  const key = { UserId: to.userId, EmailId: randomUUID() };
-  const log = database.table('EmailLog');
-  await log.insert({
-    ...key,
-    SentAt: Spanner.COMMIT_TIMESTAMP,
+  const emailId = randomUUID();
+  const log = col.emailLog.doc(emailId);
+  const entry: EmailLogDoc = {
+    EmailId: emailId,
+    UserId: to.userId,
+    SentAt: now(),
     Kind: kind,
     SwapId: swapId,
     Subject: email.subject,
     Body: email.text,
     Status: 'sending',
-  });
+  };
+  await log.create(entry);
   try {
     await sendMail(to.email, email.subject, email.text, email.html);
   } catch (err) {
-    await log.update({ ...key, Status: 'failed' });
+    await log.update({ Status: 'failed' });
     throw err;
   }
-  await log.update({ ...key, Status: 'sent' });
+  await log.update({ Status: 'sent' });
 }
 
 /**

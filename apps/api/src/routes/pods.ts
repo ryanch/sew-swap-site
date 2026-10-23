@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { Spanner, type Database, type Transaction } from '@google-cloud/spanner';
+import type { Query, Timestamp, Transaction } from '@google-cloud/firestore';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { requireAuth } from '../auth/plugin';
 import { config } from '../config';
-import { database } from '../db/spanner';
+import { assignmentId, col, getMany, inTransaction, memberId, now, Problem, rows, toIso } from '../db/firestore';
+import { loadPeople, lookupPeople, personName, type Person, type ProfileDoc, type UserDoc } from '../db/people';
 import { sendUserMail } from '../email/mailer';
 import { newPairingEmail } from '../email/templates';
 import { toCsv } from '../pods/csv';
-import { planLoop, type Edge } from '../pods/loop';
+import { planLoop } from '../pods/loop';
 import { planSplit } from '../pods/split';
 import { carrierLabel, toShipment, type Shipment } from '../shipping/tracking';
 import { canManage, getSwap, swapParamsSchema } from '../swaps/access';
@@ -23,36 +24,40 @@ export const MAX_RECIPIENTS = 5;
 const DEFAULT_POD = 'default';
 const DEFAULT_POD_NAME = 'Default';
 
-export const NAME_SQL = `COALESCE(NULLIF(u.DisplayName, ''), NULLIF(p.RecipientName, ''), u.Email)`;
-
-type MemberRow = {
+type MemberDoc = {
+  SwapId: string;
   UserId: string;
-  Email: string;
-  DisplayName: string | null;
-  Name: string;
-  JoinedAt: string;
-  InstagramHandle: string | null;
-  InstagramStatus: string | null;
-  SkillLevel: number | null;
-  PodId: string | null;
-  PodName: string | null;
-  RecipientName: string | null;
-  AddressLine1: string | null;
-  AddressLine2: string | null;
-  City: string | null;
-  Region: string | null;
-  PostalCode: string | null;
-  Country: string | null;
-  LastRemindedAt: string | null;
-  LastShipRemindedAt: string | null;
+  Role: string;
+  CreatedAt: Timestamp;
+  SkillLevel?: number | null;
+  PodId?: string | null;
 };
 
-type Person = { userId: string; name: string; instagramHandle: string | null };
+type PodDoc = { SwapId: string; PodId: string; Name: string };
+
+type AssignmentDoc = {
+  SwapId: string;
+  MakerId: string;
+  RecipientId: string;
+  ConfirmedAt?: Timestamp | null;
+  ShippedAt?: Timestamp | null;
+  Carrier?: string | null;
+  TrackingNumber?: string | null;
+};
+
+type EmailLogDoc = { UserId: string; SentAt: Timestamp; Kind: string; Status: string };
+
+/** A participant with their account and profile. */
+type MemberRow = { UserId: string; member: MemberDoc; user: UserDoc; profile: ProfileDoc | null; name: string };
+
+/** How someone is shown to the manager. */
+type Shown = Omit<Person, 'email'>;
+
 /**
  * Someone on the other end of a pairing. `confirmed` is whether the maker has confirmed it, and
  * `shipped` the package's tracking once the maker has sent it.
  */
-type Paired = Person & { confirmed: boolean; shipped: Shipment | null };
+type Paired = Shown & { confirmed: boolean; shipped: Shipment | null };
 
 export type MemberFilters = {
   userId?: string;
@@ -75,167 +80,162 @@ const filterProperties = {
   needs: { type: 'string', enum: ['maker', 'recipient', 'confirmation', 'shipping'] },
 } as const;
 
-const likeEscape = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
+const read = (q: Query, tx?: Transaction) => (tx ? tx.get(q) : q.get());
+const participantsQuery = (swapId: string) => col.swapMembers.where('SwapId', '==', swapId).where('Role', '==', 'participant');
 
-/** The WHERE clause and params for participants of a swap matching `f`. */
-function memberWhere(swapId: string, f: MemberFilters) {
-  const where = [`m.SwapId = @swapId`, `m.Role = 'participant'`];
-  const params: Record<string, unknown> = { swapId };
-  if (f.userId) {
-    where.push('m.UserId = @userId');
-    params.userId = f.userId;
+/** What a call needs besides the participants themselves. */
+type Load = { people?: boolean; pods?: boolean; assignments?: boolean; reminders?: boolean };
+
+/**
+ * A swap's participants and whatever else `load` asks for, read together. Filtering, sorting and
+ * counting happen in memory, so every query is a plain equality query. With `onlyUserId`, just
+ * that person's member doc is read.
+ */
+async function loadSwap(swapId: string, load: Load, tx?: Transaction, onlyUserId?: string) {
+  const [members, pods, assignments, emails] = await Promise.all([
+    onlyUserId
+      ? getMany<MemberDoc>(col.swapMembers, [memberId(swapId, onlyUserId, 'participant')], tx).then((m) => [...m.values()])
+      : read(participantsQuery(swapId), tx).then((s) => rows<MemberDoc>(s)),
+    load.pods ? read(col.pods.where('SwapId', '==', swapId), tx).then((s) => rows<PodDoc>(s)) : [],
+    load.assignments ? read(col.assignments.where('SwapId', '==', swapId), tx).then((s) => rows<AssignmentDoc>(s)) : [],
+    load.reminders
+      ? read(col.emailLog.where('SwapId', '==', swapId).where('Kind', 'in', ['confirm_reminder', 'ship_reminder']), tx).then((s) =>
+          rows<EmailLogDoc>(s),
+        )
+      : [],
+  ]);
+  const people = load.people ? await loadPeople(members.map((m) => m.UserId), tx) : { users: new Map(), profiles: new Map() };
+
+  // The latest reminder of each kind that actually went out, per person.
+  const reminded = { confirm_reminder: new Map<string, Timestamp>(), ship_reminder: new Map<string, Timestamp>() };
+  for (const e of emails) {
+    if (e.Status !== 'sent') continue;
+    const map = reminded[e.Kind as keyof typeof reminded];
+    const last = map.get(e.UserId);
+    if (!last || e.SentAt.toMillis() > last.toMillis()) map.set(e.UserId, e.SentAt);
   }
-  if (f.pod) {
-    where.push(f.pod === DEFAULT_POD ? 'm.PodId IS NULL' : 'm.PodId = @pod');
-    if (f.pod !== DEFAULT_POD) params.pod = f.pod;
+
+  const memberRows: MemberRow[] = [];
+  for (const m of members) {
+    const user = people.users.get(m.UserId) as UserDoc | undefined;
+    // Without people loaded, rows only carry the member doc (enough for pod counts).
+    if (load.people && !user) continue;
+    const profile = (people.profiles.get(m.UserId) as ProfileDoc | undefined) ?? null;
+    memberRows.push({ UserId: m.UserId, member: m, user: user!, profile, name: user ? personName(user, profile) : '' });
   }
-  if (f.exceptPod) {
-    where.push(f.exceptPod === DEFAULT_POD ? 'm.PodId IS NOT NULL' : '(m.PodId IS NULL OR m.PodId != @exceptPod)');
-    if (f.exceptPod !== DEFAULT_POD) params.exceptPod = f.exceptPod;
-  }
-  const q = f.q?.trim().toLowerCase().replace(/^@/, '');
-  if (q) {
-    where.push(`(LOWER(u.Email) LIKE @q OR LOWER(${NAME_SQL}) LIKE @q OR LOWER(IFNULL(p.InstagramHandle, '')) LIKE @q)`);
-    params.q = `%${likeEscape(q)}%`;
-  }
-  if (f.country) {
-    where.push('p.Country = @country');
-    params.country = f.country.toUpperCase();
-  }
-  if (f.region?.trim()) {
-    where.push('LOWER(p.Region) = @region');
-    params.region = f.region.trim().toLowerCase();
-  }
-  if (f.skill === 'none') where.push('m.SkillLevel IS NULL');
-  else if (f.skill) {
-    where.push('m.SkillLevel = @skill');
-    params.skill = Spanner.int(Number(f.skill));
-  }
-  if (f.needs === 'maker') {
-    where.push('NOT EXISTS (SELECT 1 FROM Assignments a WHERE a.SwapId = m.SwapId AND a.RecipientId = m.UserId)');
-  } else if (f.needs === 'recipient') {
-    where.push('NOT EXISTS (SELECT 1 FROM Assignments a WHERE a.SwapId = m.SwapId AND a.MakerId = m.UserId)');
-  } else if (f.needs === 'confirmation') {
-    where.push('EXISTS (SELECT 1 FROM Assignments a WHERE a.SwapId = m.SwapId AND a.MakerId = m.UserId AND a.ConfirmedAt IS NULL)');
-  } else if (f.needs === 'shipping') {
-    where.push('EXISTS (SELECT 1 FROM Assignments a WHERE a.SwapId = m.SwapId AND a.MakerId = m.UserId AND a.ShippedAt IS NULL)');
-  }
-  return { sql: where.join(' AND '), params };
+  memberRows.sort((a, b) => (a.UserId < b.UserId ? -1 : a.UserId > b.UserId ? 1 : 0));
+
+  return {
+    members: memberRows,
+    pods: new Map(pods.map((p) => [p.PodId, p])),
+    assignments,
+    reminded,
+  };
 }
 
-const MEMBER_FROM = `FROM SwapMembers m JOIN Users u ON u.UserId = m.UserId
-  LEFT JOIN UserProfiles p ON p.UserId = m.UserId
-  LEFT JOIN Pods pd ON pd.SwapId = m.SwapId AND pd.PodId = m.PodId`;
+type SwapData = Awaited<ReturnType<typeof loadSwap>>;
+
+const podOf = (m: MemberDoc) => m.PodId ?? null;
+
+/** Whether a participant matches `f`. Needs people loaded, and assignments for `needs`. */
+function matches(r: MemberRow, f: MemberFilters, assignments: AssignmentDoc[]) {
+  const m = r.member;
+  if (f.userId && r.UserId !== f.userId) return false;
+  if (f.pod && (f.pod === DEFAULT_POD ? podOf(m) !== null : podOf(m) !== f.pod)) return false;
+  if (f.exceptPod && (f.exceptPod === DEFAULT_POD ? podOf(m) === null : podOf(m) === f.exceptPod)) return false;
+  const q = f.q?.trim().toLowerCase().replace(/^@/, '');
+  if (q) {
+    const fields = [r.user.Email, r.name, r.profile?.InstagramHandle ?? ''];
+    if (!fields.some((s) => s.toLowerCase().includes(q))) return false;
+  }
+  if (f.country && r.profile?.Country !== f.country.toUpperCase()) return false;
+  const region = f.region?.trim().toLowerCase();
+  if (region && r.profile?.Region?.toLowerCase() !== region) return false;
+  const skill = m.SkillLevel ?? null;
+  if (f.skill === 'none' ? skill !== null : f.skill && skill !== Number(f.skill)) return false;
+  if (f.needs) {
+    const id = r.UserId;
+    const has = (test: (a: AssignmentDoc) => boolean) => assignments.some(test);
+    if (f.needs === 'maker' && has((a) => a.RecipientId === id)) return false;
+    if (f.needs === 'recipient' && has((a) => a.MakerId === id)) return false;
+    if (f.needs === 'confirmation' && !has((a) => a.MakerId === id && !a.ConfirmedAt)) return false;
+    if (f.needs === 'shipping' && !has((a) => a.MakerId === id && !a.ShippedAt)) return false;
+  }
+  return true;
+}
 
 /** One page of participants, keyset-paginated on UserId, with how many match in total. */
-async function queryMembers(
-  runner: Database | Transaction,
-  swapId: string,
-  f: MemberFilters,
-  page: { after?: string; limit: number },
-) {
-  const where = memberWhere(swapId, f);
-  const [rows] = await runner.run({
-      sql: `SELECT m.UserId, u.Email, u.DisplayName, ${NAME_SQL} AS Name,
-                   FORMAT_TIMESTAMP('%FT%TZ', m.CreatedAt) AS JoinedAt,
-                   p.InstagramHandle, p.InstagramStatus, m.SkillLevel, m.PodId, pd.Name AS PodName,
-                   p.RecipientName, p.AddressLine1, p.AddressLine2, p.City, p.Region, p.PostalCode, p.Country,
-                   (SELECT FORMAT_TIMESTAMP('%FT%TZ', MAX(e.SentAt)) FROM EmailLog e
-                    WHERE e.SwapId = m.SwapId AND e.Kind = 'confirm_reminder' AND e.UserId = m.UserId
-                      AND e.Status = 'sent') AS LastRemindedAt,
-                   (SELECT FORMAT_TIMESTAMP('%FT%TZ', MAX(e.SentAt)) FROM EmailLog e
-                    WHERE e.SwapId = m.SwapId AND e.Kind = 'ship_reminder' AND e.UserId = m.UserId
-                      AND e.Status = 'sent') AS LastShipRemindedAt
-            ${MEMBER_FROM}
-            WHERE ${where.sql} AND m.UserId > @after
-            ORDER BY m.UserId
-            LIMIT @limit`,
-      params: { ...where.params, after: page.after ?? '', limit: Spanner.int(page.limit + 1) },
-      json: true,
-    });
-  const list = (rows as MemberRow[]).slice(0, page.limit);
+async function queryMembers(swapId: string, f: MemberFilters, page: { after?: string; limit: number }, load: Load = {}, tx?: Transaction) {
+  const data = await loadSwap(swapId, { ...load, people: true, assignments: load.assignments || !!f.needs }, tx, f.userId);
+  const matching = data.members.filter((r) => matches(r, f, data.assignments));
+  const after = page.after ?? '';
+  const rest = matching.filter((r) => r.UserId > after);
+  const list = rest.slice(0, page.limit);
   return {
     rows: list,
-    total: await countMembers(runner, swapId, f),
-    nextCursor: rows.length > page.limit ? list[list.length - 1].UserId : null,
+    total: matching.length,
+    nextCursor: rest.length > page.limit ? list[list.length - 1].UserId : null,
+    data,
   };
 }
 
 /** How many participants of the swap match `f`. */
-export async function countMembers(runner: Database | Transaction, swapId: string, f: MemberFilters) {
-  const where = memberWhere(swapId, f);
-  const [counts] = await runner.run({ sql: `SELECT COUNT(*) AS Total ${MEMBER_FROM} WHERE ${where.sql}`, params: where.params, json: true });
-  return Number((counts[0] as { Total: number }).Total);
+export async function countMembers(swapId: string, f: MemberFilters, tx?: Transaction): Promise<number> {
+  const data = await loadSwap(swapId, { people: true, assignments: !!f.needs }, tx, f.userId);
+  return data.members.filter((r) => matches(r, f, data.assignments)).length;
 }
 
 /** Who each of `userIds` makes for and who makes for them, with names and Instagram for display. */
-async function pairingsFor(runner: Database | Transaction, swapId: string, userIds: string[]) {
+async function pairingsFor(data: SwapData, userIds: string[]) {
   const makingFor = new Map<string, Paired[]>();
   const madeBy = new Map<string, Paired[]>();
-  if (userIds.length === 0) return { makingFor, madeBy };
-  const [rows] = await runner.run({
-    sql: `SELECT MakerId, RecipientId, ConfirmedAt IS NOT NULL AS Confirmed,
-                 FORMAT_TIMESTAMP('%FT%TZ', ShippedAt) AS ShippedAt, Carrier, TrackingNumber
-          FROM Assignments
-          WHERE SwapId = @swapId AND (MakerId IN UNNEST(@ids) OR RecipientId IN UNNEST(@ids))`,
-    params: { swapId, ids: userIds },
-    json: true,
-  });
-  const pairs = rows as {
-    MakerId: string;
-    RecipientId: string;
-    Confirmed: boolean;
-    ShippedAt: string | null;
-    Carrier: string | null;
-    TrackingNumber: string | null;
-  }[];
-  if (pairs.length === 0) return { makingFor, madeBy };
-  const people = await lookupPeople(runner, [...new Set(pairs.flatMap((r) => [r.MakerId, r.RecipientId]))]);
-  const add = (map: Map<string, Paired[]>, key: string, other: string, r: (typeof pairs)[number]) =>
-    map.set(key, [...(map.get(key) ?? []), { ...people.get(other)!, confirmed: r.Confirmed, shipped: toShipment(r) }]);
   const ids = new Set(userIds);
-  for (const r of pairs) {
-    if (ids.has(r.MakerId)) add(makingFor, r.MakerId, r.RecipientId, r);
-    if (ids.has(r.RecipientId)) add(madeBy, r.RecipientId, r.MakerId, r);
+  const pairs = data.assignments.filter((a) => ids.has(a.MakerId) || ids.has(a.RecipientId));
+  if (pairs.length === 0) return { makingFor, madeBy };
+  const people = new Map<string, Shown>();
+  for (const r of data.members) {
+    people.set(r.UserId, { userId: r.UserId, name: r.name, instagramHandle: r.profile?.InstagramHandle ?? null });
+  }
+  const missing = pairs.flatMap((a) => [a.MakerId, a.RecipientId]).filter((id) => !people.has(id));
+  for (const [id, p] of await lookupPeople(missing)) people.set(id, { userId: id, name: p.name, instagramHandle: p.instagramHandle });
+
+  const add = (map: Map<string, Paired[]>, key: string, other: string, a: AssignmentDoc) =>
+    map.set(key, [
+      ...(map.get(key) ?? []),
+      {
+        ...people.get(other)!,
+        confirmed: !!a.ConfirmedAt,
+        shipped: toShipment({ ShippedAt: toIso(a.ShippedAt), Carrier: a.Carrier ?? null, TrackingNumber: a.TrackingNumber ?? null }),
+      },
+    ]);
+  for (const a of pairs) {
+    if (ids.has(a.MakerId)) add(makingFor, a.MakerId, a.RecipientId, a);
+    if (ids.has(a.RecipientId)) add(madeBy, a.RecipientId, a.MakerId, a);
   }
   for (const list of [...makingFor.values(), ...madeBy.values()]) list.sort((x, y) => x.name.localeCompare(y.name));
   return { makingFor, madeBy };
 }
 
-async function lookupPeople(runner: Database | Transaction, userIds: string[]) {
-  const [rows] = await runner.run({
-    sql: `SELECT u.UserId, ${NAME_SQL} AS Name, p.InstagramHandle
-          FROM Users u LEFT JOIN UserProfiles p ON p.UserId = u.UserId WHERE u.UserId IN UNNEST(@ids)`,
-    params: { ids: userIds },
-    json: true,
-  });
-  return new Map(
-    (rows as { UserId: string; Name: string; InstagramHandle: string | null }[]).map((r) => [
-      r.UserId,
-      { userId: r.UserId, name: r.Name, instagramHandle: r.InstagramHandle },
-    ]),
-  );
-}
-
-function toMember(r: MemberRow, pairs: Awaited<ReturnType<typeof pairingsFor>>) {
+function toMember(r: MemberRow, data: SwapData, pairs: Awaited<ReturnType<typeof pairingsFor>>) {
+  const podId = podOf(r.member);
   return {
     userId: r.UserId,
-    email: r.Email,
-    displayName: r.DisplayName,
-    name: r.Name,
-    joinedAt: r.JoinedAt,
-    instagramHandle: r.InstagramHandle,
+    email: r.user.Email,
+    displayName: r.user.DisplayName ?? null,
+    name: r.name,
+    joinedAt: toIso(r.member.CreatedAt),
+    instagramHandle: r.profile?.InstagramHandle ?? null,
     // Anything short of a confirmed public account is flagged for the manager.
-    instagramConfirmed: r.InstagramStatus === 'public',
-    skillLevel: r.SkillLevel === null ? null : Number(r.SkillLevel),
-    pod: { podId: r.PodId ?? DEFAULT_POD, name: r.PodName ?? DEFAULT_POD_NAME },
-    country: r.Country,
-    region: r.Region,
-    city: r.City,
+    instagramConfirmed: r.profile?.InstagramStatus === 'public',
+    skillLevel: r.member.SkillLevel ?? null,
+    pod: { podId: podId ?? DEFAULT_POD, name: (podId && data.pods.get(podId)?.Name) || DEFAULT_POD_NAME },
+    country: r.profile?.Country ?? null,
+    region: r.profile?.Region ?? null,
+    city: r.profile?.City ?? null,
     makingFor: pairs.makingFor.get(r.UserId) ?? [],
     madeBy: pairs.madeBy.get(r.UserId) ?? [],
-    lastRemindedAt: r.LastRemindedAt,
-    lastShipRemindedAt: r.LastShipRemindedAt,
+    lastRemindedAt: toIso(data.reminded.confirm_reminder.get(r.UserId)),
+    lastShipRemindedAt: toIso(data.reminded.ship_reminder.get(r.UserId)),
   };
 }
 
@@ -260,18 +260,14 @@ export async function refuse(req: FastifyRequest<{ Params: { swapId: string } }>
   return false;
 }
 
-type PodRow = { PodId: string; Name: string };
-
-async function readPods(runner: Database | Transaction, swapId: string) {
-  const [pods] = await runner.run({ sql: `SELECT PodId, Name FROM Pods WHERE SwapId = @swapId`, params: { swapId }, json: true });
-  const [counts] = await runner.run({
-      sql: `SELECT IFNULL(PodId, '${DEFAULT_POD}') AS PodId, COUNT(*) AS N FROM SwapMembers
-            WHERE SwapId = @swapId AND Role = 'participant' GROUP BY PodId`,
-      params: { swapId },
-      json: true,
-    });
-  const count = new Map((counts as { PodId: string; N: number }[]).map((c) => [c.PodId, Number(c.N)]));
-  const sorted = (pods as PodRow[]).sort((a, b) => a.Name.localeCompare(b.Name, undefined, { numeric: true }));
+/** Default first, then the swap's pods by name (numbers in order), each with how many people it has. */
+function podList(data: SwapData) {
+  const count = new Map<string, number>();
+  for (const r of data.members) {
+    const id = podOf(r.member) ?? DEFAULT_POD;
+    count.set(id, (count.get(id) ?? 0) + 1);
+  }
+  const sorted = [...data.pods.values()].sort((a, b) => a.Name.localeCompare(b.Name, undefined, { numeric: true }));
   return [
     { podId: DEFAULT_POD, name: DEFAULT_POD_NAME, count: count.get(DEFAULT_POD) ?? 0 },
     ...sorted.map((p) => ({ podId: p.PodId, name: p.Name, count: count.get(p.PodId) ?? 0 })),
@@ -283,67 +279,25 @@ async function podNameProblem(tx: Transaction, swapId: string, name: string, exc
   if (!name) return 'Please give the pod a name.';
   if (name.length > 100) return 'Please use a shorter pod name.';
   if (name.toLowerCase() === DEFAULT_POD_NAME.toLowerCase()) return `"${DEFAULT_POD_NAME}" is already a pod.`;
-  const [rows] = await tx.run({
-    sql: `SELECT PodId FROM Pods WHERE SwapId = @swapId AND LOWER(Name) = @name`,
-    params: { swapId, name: name.toLowerCase() },
-    json: true,
-  });
-  return (rows as PodRow[]).some((r) => r.PodId !== exceptPodId) ? `There's already a pod called "${name}".` : null;
+  const pods = rows<PodDoc>(await tx.get(col.pods.where('SwapId', '==', swapId)));
+  return pods.some((p) => p.PodId !== exceptPodId && p.Name.toLowerCase() === name.toLowerCase())
+    ? `There's already a pod called "${name}".`
+    : null;
 }
 
-async function podExists(runner: Database | Transaction, swapId: string, podId: string) {
+async function podExists(tx: Transaction, swapId: string, podId: string) {
   if (podId === DEFAULT_POD) return true;
-  const [rows] = await runner.run({
-    sql: `SELECT 1 AS Ok FROM Pods WHERE SwapId = @swapId AND PodId = @podId`,
-    params: { swapId, podId },
-    json: true,
-  });
-  return rows.length > 0;
+  const snap = await tx.get(col.pods.doc(podId));
+  return snap.exists && (snap.data() as PodDoc).SwapId === swapId;
 }
 
 /** Which of `userIds` are participants of the swap. */
-async function participantsAmong(runner: Database | Transaction, swapId: string, userIds: string[]) {
-  if (userIds.length === 0) return new Set<string>();
-  const [rows] = await runner.run({
-    sql: `SELECT UserId FROM SwapMembers WHERE SwapId = @swapId AND Role = 'participant' AND UserId IN UNNEST(@ids)`,
-    params: { swapId, ids: userIds },
-    json: true,
-  });
-  return new Set((rows as { UserId: string }[]).map((r) => r.UserId));
+async function participantsAmong(tx: Transaction, swapId: string, userIds: string[]) {
+  const found = await getMany<MemberDoc>(col.swapMembers, userIds.map((id) => memberId(swapId, id, 'participant')), tx);
+  return new Set([...found.values()].map((m) => m.UserId));
 }
 
-const memberKey = (swapId: string, userId: string) => ({ SwapId: swapId, UserId: userId, Role: 'participant' });
-
-class Problem extends Error {
-  constructor(
-    message: string,
-    public status = 400,
-  ) {
-    super(message);
-  }
-}
-
-/** Runs a read-write transaction; a thrown Problem rolls it back and becomes an error reply. */
-async function inTransaction<T>(reply: FastifyReply, work: (tx: Transaction) => Promise<T>) {
-  try {
-    return await database.runTransactionAsync(async (tx) => {
-      try {
-        const result = await work(tx);
-        await tx.commit();
-        return result;
-      } catch (err) {
-        if (err instanceof Problem) await tx.rollback();
-        throw err;
-      }
-    });
-  } catch (err) {
-    if (err instanceof Problem) {
-      reply.code(err.status).send({ error: err.message });
-      return undefined;
-    }
-    throw err;
-  }
-}
+const memberRef = (swapId: string, userId: string) => col.swapMembers.doc(memberId(swapId, userId, 'participant'));
 
 export async function podRoutes(app: FastifyInstance) {
   const auth = { preHandler: requireAuth };
@@ -367,9 +321,9 @@ export async function podRoutes(app: FastifyInstance) {
     async (req, reply) => {
       if (await refuse(req, reply)) return reply;
       const { limit = 100, after, ...filters } = req.query;
-      const page = await queryMembers(database, req.params.swapId, filters, { after, limit });
-      const pairs = await pairingsFor(database, req.params.swapId, page.rows.map((r) => r.UserId));
-      return { members: page.rows.map((r) => toMember(r, pairs)), total: page.total, nextCursor: page.nextCursor };
+      const page = await queryMembers(req.params.swapId, filters, { after, limit }, { pods: true, assignments: true, reminders: true });
+      const pairs = await pairingsFor(page.data, page.rows.map((r) => r.UserId));
+      return { members: page.rows.map((r) => toMember(r, page.data, pairs)), total: page.total, nextCursor: page.nextCursor };
     },
   );
 
@@ -379,21 +333,22 @@ export async function podRoutes(app: FastifyInstance) {
     async (req, reply) => {
       if (await refuse(req, reply)) return reply;
       const { swapId, userId } = req.params;
-      const { rows } = await queryMembers(database, swapId, { userId }, { limit: 1 });
-      if (!rows[0]) return reply.code(404).send({ error: "That person isn't in this swap." });
-      const r = rows[0];
+      const { rows: found, data } = await queryMembers(swapId, { userId }, { limit: 1 }, { pods: true, assignments: true, reminders: true });
+      if (!found[0]) return reply.code(404).send({ error: "That person isn't in this swap." });
+      const r = found[0];
+      const p = r.profile;
       return {
         member: {
-          ...toMember(r, await pairingsFor(database, swapId, [userId])),
-          address: r.Country
+          ...toMember(r, data, await pairingsFor(data, [userId])),
+          address: p?.Country
             ? {
-                name: r.RecipientName ?? '',
-                line1: r.AddressLine1 ?? '',
-                line2: r.AddressLine2 ?? '',
-                city: r.City ?? '',
-                region: r.Region ?? '',
-                postalCode: r.PostalCode ?? '',
-                country: r.Country,
+                name: p.RecipientName ?? '',
+                line1: p.AddressLine1 ?? '',
+                line2: p.AddressLine2 ?? '',
+                city: p.City ?? '',
+                region: p.Region ?? '',
+                postalCode: p.PostalCode ?? '',
+                country: p.Country,
               }
             : null,
         },
@@ -422,7 +377,7 @@ export async function podRoutes(app: FastifyInstance) {
         if (!(await participantsAmong(tx, swapId, [userId])).has(userId)) {
           throw new Problem("That person isn't in this swap.", 404);
         }
-        tx.update('SwapMembers', { ...memberKey(swapId, userId), SkillLevel: req.body.skillLevel });
+        tx.update(memberRef(swapId, userId), { SkillLevel: req.body.skillLevel });
         return true;
       });
       return done && { skillLevel: req.body.skillLevel };
@@ -431,7 +386,7 @@ export async function podRoutes(app: FastifyInstance) {
 
   app.get<{ Params: { swapId: string } }>('/api/swaps/:swapId/pods', { ...auth, schema: { params: swapParams } }, async (req, reply) => {
     if (await refuse(req, reply)) return reply;
-    return { pods: await readPods(database, req.params.swapId) };
+    return { pods: podList(await loadSwap(req.params.swapId, { pods: true })) };
   });
 
   const nameBody = {
@@ -452,7 +407,7 @@ export async function podRoutes(app: FastifyInstance) {
       const done = await inTransaction(reply, async (tx) => {
         const problem = await podNameProblem(tx, swapId, name);
         if (problem) throw new Problem(problem);
-        tx.insert('Pods', { SwapId: swapId, PodId: podId, Name: name, CreatedAt: Spanner.COMMIT_TIMESTAMP });
+        tx.create(col.pods.doc(podId), { SwapId: swapId, PodId: podId, Name: name, CreatedAt: now() });
         return true;
       });
       return done && reply.code(201).send({ pod: { podId, name, count: 0 } });
@@ -471,7 +426,7 @@ export async function podRoutes(app: FastifyInstance) {
         if (!(await podExists(tx, swapId, podId))) throw new Problem('That pod was not found.', 404);
         const problem = await podNameProblem(tx, swapId, name, podId);
         if (problem) throw new Problem(problem);
-        tx.update('Pods', { SwapId: swapId, PodId: podId, Name: name });
+        tx.update(col.pods.doc(podId), { Name: name });
         return true;
       });
       return done && { pod: { podId, name } };
@@ -488,8 +443,9 @@ export async function podRoutes(app: FastifyInstance) {
       const done = await inTransaction(reply, async (tx) => {
         if (podId === DEFAULT_POD) throw new Problem(`The ${DEFAULT_POD_NAME} pod can't be deleted.`);
         if (!(await podExists(tx, swapId, podId))) throw new Problem('That pod was not found.', 404);
-        await movePodMembers(tx, swapId, podId, null);
-        tx.deleteRows('Pods', [[swapId, podId]]);
+        const members = rows<MemberDoc>(await tx.get(participantsQuery(swapId).where('PodId', '==', podId)));
+        for (const m of members) tx.update(memberRef(swapId, m.UserId), { PodId: null });
+        tx.delete(col.pods.doc(podId));
         return true;
       });
       return done && reply.code(204).send();
@@ -517,7 +473,7 @@ export async function podRoutes(app: FastifyInstance) {
         if (!(await podExists(tx, swapId, podId))) throw new Problem('That pod was not found.', 404);
         const members = await participantsAmong(tx, swapId, [...new Set(req.body.userIds)]);
         for (const userId of members) {
-          tx.update('SwapMembers', { ...memberKey(swapId, userId), PodId: podId === DEFAULT_POD ? null : podId });
+          tx.update(memberRef(swapId, userId), { PodId: podId === DEFAULT_POD ? null : podId });
         }
         return members.size;
       });
@@ -544,20 +500,21 @@ export async function podRoutes(app: FastifyInstance) {
       const { swapId, podId } = req.params;
       const { size } = req.body;
       const created = await inTransaction(reply, async (tx) => {
-        const pods = await readPods(tx, swapId);
+        const data = await loadSwap(swapId, { people: true, pods: true }, tx);
+        const pods = podList(data);
         const pod = pods.find((p) => p.podId === podId);
         if (!pod) throw new Problem('That pod was not found.', 404);
-        const { rows } = await queryMembers(tx, swapId, { pod: podId }, { limit: 10_000 });
-        if (rows.length <= size) {
-          throw new Problem(`This pod has ${rows.length} ${rows.length === 1 ? 'person' : 'people'}, so it's already that size or smaller.`);
+        const inPod = data.members.filter((r) => matches(r, { pod: podId }, []));
+        if (inPod.length <= size) {
+          throw new Problem(`This pod has ${inPod.length} ${inPod.length === 1 ? 'person' : 'people'}, so it's already that size or smaller.`);
         }
         const plan = planSplit(
-          rows.map((r) => ({
+          inPod.map((r) => ({
             userId: r.UserId,
-            skillLevel: r.SkillLevel === null ? null : Number(r.SkillLevel),
-            country: r.Country,
-            region: r.Region,
-            postalCode: r.PostalCode,
+            skillLevel: r.member.SkillLevel ?? null,
+            country: r.profile?.Country ?? null,
+            region: r.profile?.Region ?? null,
+            postalCode: r.profile?.PostalCode ?? null,
           })),
           size,
           pod.name,
@@ -565,11 +522,11 @@ export async function podRoutes(app: FastifyInstance) {
         );
         const made = plan.map((p) => ({ podId: randomUUID(), name: p.name, count: p.userIds.length, userIds: p.userIds }));
         for (const p of made) {
-          tx.insert('Pods', { SwapId: swapId, PodId: p.podId, Name: p.name, CreatedAt: Spanner.COMMIT_TIMESTAMP });
-          for (const userId of p.userIds) tx.update('SwapMembers', { ...memberKey(swapId, userId), PodId: p.podId });
+          tx.create(col.pods.doc(p.podId), { SwapId: swapId, PodId: p.podId, Name: p.name, CreatedAt: now() });
+          for (const userId of p.userIds) tx.update(memberRef(swapId, userId), { PodId: p.podId });
         }
         // The old pod is empty now. Default always stays.
-        if (podId !== DEFAULT_POD) tx.deleteRows('Pods', [[swapId, podId]]);
+        if (podId !== DEFAULT_POD) tx.delete(col.pods.doc(podId));
         return made.map(({ userIds: _, ...p }) => p);
       });
       return created && { pods: created };
@@ -585,28 +542,19 @@ export async function podRoutes(app: FastifyInstance) {
       const userId = req.user!.userId;
       const result = await inTransaction(reply, async (tx) => {
         if (!(await podExists(tx, swapId, podId))) throw new Problem('That pod was not found.', 404);
-        const { rows } = await queryMembers(tx, swapId, { pod: podId }, { limit: 10_000 });
-        const [edges] = await tx.run({
-          sql: `SELECT MakerId AS makerId, RecipientId AS recipientId FROM Assignments WHERE SwapId = @swapId`,
-          params: { swapId },
-          json: true,
-        });
-        const plan = planLoop(rows.map((r) => r.UserId), edges as Edge[]);
+        const data = await loadSwap(swapId, { people: true, assignments: true }, tx);
+        const inPod = data.members.filter((r) => matches(r, { pod: podId }, []));
+        const edges = data.assignments.map((a) => ({ makerId: a.MakerId, recipientId: a.RecipientId }));
+        const plan = planLoop(inPod.map((r) => r.UserId), edges);
         for (const e of plan.add) {
-          tx.insert('Assignments', {
-            SwapId: swapId,
-            MakerId: e.makerId,
-            RecipientId: e.recipientId,
-            CreatedBy: userId,
-            CreatedAt: Spanner.COMMIT_TIMESTAMP,
-          });
+          tx.create(col.assignments.doc(assignmentId(swapId, e.makerId, e.recipientId)), newAssignment(swapId, e.makerId, e.recipientId, userId));
         }
-        const name = new Map(rows.map((r) => [r.UserId, r.Name]));
+        const name = new Map(inPod.map((r) => [r.UserId, r.name]));
         const problems = [
           ...plan.unmatchedMakers.map((id) => `${name.get(id)} isn't making for anyone yet.`),
           ...plan.unmatchedRecipients.map((id) => `Nobody is making for ${name.get(id)} yet.`),
         ];
-        if (rows.length < 2 && problems.length) problems.unshift('A pod needs at least 2 people to make a loop.');
+        if (inPod.length < 2 && problems.length) problems.unshift('A pod needs at least 2 people to make a loop.');
         return {
           added: plan.add.map((e) => ({ maker: name.get(e.makerId), recipient: name.get(e.recipientId) })),
           problems,
@@ -627,32 +575,24 @@ export async function podRoutes(app: FastifyInstance) {
         if (makerId === recipientId) throw new Problem("Someone can't make for themselves.");
         const members = await participantsAmong(tx, swapId, [makerId, recipientId]);
         if (members.size < 2) throw new Problem('Both people need to be in this swap.');
-        const [current] = await tx.run({
-          sql: `SELECT RecipientId FROM Assignments WHERE SwapId = @swapId AND MakerId = @makerId`,
-          params: { swapId, makerId },
-          json: true,
-        });
-        const recipients = (current as { RecipientId: string }[]).map((r) => r.RecipientId);
+        const current = rows<AssignmentDoc>(
+          await tx.get(col.assignments.where('SwapId', '==', swapId).where('MakerId', '==', makerId)),
+        );
+        const recipients = current.map((r) => r.RecipientId);
         if (recipients.includes(recipientId)) return 'existing' as const;
         if (recipients.length >= MAX_RECIPIENTS) {
-          const maker = (await lookupPeople(tx, [makerId])).get(makerId)!;
+          const maker = (await lookupPeople([makerId], tx)).get(makerId)!;
           throw new Problem(`${maker.name} already makes for ${MAX_RECIPIENTS} people.`);
         }
-        tx.insert('Assignments', {
-          SwapId: swapId,
-          MakerId: makerId,
-          RecipientId: recipientId,
-          CreatedBy: userId,
-          CreatedAt: Spanner.COMMIT_TIMESTAMP,
-        });
+        tx.create(col.assignments.doc(assignmentId(swapId, makerId, recipientId)), newAssignment(swapId, makerId, recipientId, userId));
         return 'added' as const;
       });
       if (!done) return reply;
       // Once makers are published, a new pairing needs confirming like the rest, so tell the maker.
       const swap = (await getSwap(swapId))!;
       if (done === 'added' && swap.makersPublishedAt) {
-        const [users] = await database.run({ sql: `SELECT Email FROM Users WHERE UserId = @makerId`, params: { makerId }, json: true });
-        const email = (users[0] as { Email: string } | undefined)?.Email;
+        const maker = await col.users.doc(makerId).get();
+        const email = (maker.data() as UserDoc | undefined)?.Email;
         try {
           if (email) await sendUserMail({ userId: makerId, email }, 'new_pairing', swapId, newPairingEmail(swap, config.appBaseUrl));
         } catch (err) {
@@ -669,7 +609,7 @@ export async function podRoutes(app: FastifyInstance) {
     async (req, reply) => {
       if (await refuse(req, reply)) return reply;
       const { swapId, makerId, recipientId } = req.params;
-      await database.table('Assignments').deleteRows([[swapId, makerId, recipientId]]);
+      await col.assignments.doc(assignmentId(swapId, makerId, recipientId)).delete();
       return reply.code(204).send();
     },
   );
@@ -681,18 +621,18 @@ export async function podRoutes(app: FastifyInstance) {
       if (await refuse(req, reply)) return reply;
       const { swapId } = req.params;
       const swap = (await getSwap(swapId))!;
-      const { rows } = await queryMembers(database, swapId, {}, { limit: 100_000 });
-      const pairs = await pairingsFor(database, swapId, rows.map((r) => r.UserId));
-      const label = (p: Person) => (p.instagramHandle ? `${p.name} (@${p.instagramHandle})` : p.name);
-      const members = rows
-        .map((r) => toMember(r, pairs))
+      const { rows: list, data } = await queryMembers(swapId, {}, { limit: 100_000 }, { pods: true, assignments: true });
+      const pairs = await pairingsFor(data, list.map((r) => r.UserId));
+      const label = (p: Shown) => (p.instagramHandle ? `${p.name} (@${p.instagramHandle})` : p.name);
+      const members = list
+        .map((r) => toMember(r, data, pairs))
         .sort(
           (a, b) =>
             Number(a.pod.podId !== DEFAULT_POD) - Number(b.pod.podId !== DEFAULT_POD) ||
             a.pod.name.localeCompare(b.pod.name, undefined, { numeric: true }) ||
             a.name.localeCompare(b.name),
         );
-      const byId = new Map(rows.map((r) => [r.UserId, r]));
+      const byId = new Map(list.map((r) => [r.UserId, r]));
       const csv = toCsv([
         [
           'Name', 'Email', 'Instagram', 'Instagram link', 'Instagram confirmed', 'Name on package',
@@ -706,29 +646,29 @@ export async function podRoutes(app: FastifyInstance) {
           'Made by',
         ],
         ...members.map((m) => {
-          const r = byId.get(m.userId)!;
+          const p = byId.get(m.userId)!.profile;
           return [
             m.name,
             m.email,
             m.instagramHandle ? `@${m.instagramHandle}` : '',
             m.instagramHandle ? `https://www.instagram.com/${m.instagramHandle}/` : '',
             m.instagramConfirmed ? 'Yes' : 'No',
-            r.RecipientName,
-            r.AddressLine1,
-            r.AddressLine2,
-            r.City,
-            r.Region,
-            r.PostalCode,
-            r.Country,
+            p?.RecipientName ?? null,
+            p?.AddressLine1 ?? null,
+            p?.AddressLine2 ?? null,
+            p?.City ?? null,
+            p?.Region ?? null,
+            p?.PostalCode ?? null,
+            p?.Country ?? null,
             m.pod.name,
             m.skillLevel,
             ...Array.from({ length: MAX_RECIPIENTS }, (_, i) => {
-              const p = m.makingFor[i];
-              if (!p) return ['', '', '', '', ''];
-              const s = p.shipped;
+              const made = m.makingFor[i];
+              if (!made) return ['', '', '', '', ''];
+              const s = made.shipped;
               return [
-                label(p),
-                p.confirmed ? 'Yes' : 'No',
+                label(made),
+                made.confirmed ? 'Yes' : 'No',
                 s ? 'Yes' : 'No',
                 s ? `${s.carrier === 'other' ? '' : `${carrierLabel(s.carrier)} `}${s.trackingNumber}` : '',
                 s?.trackingUrl ?? '',
@@ -747,12 +687,17 @@ export async function podRoutes(app: FastifyInstance) {
   );
 }
 
-/** Moves everyone in `fromPodId` to `toPodId` (null = Default), inside the caller's transaction. */
-async function movePodMembers(tx: Transaction, swapId: string, fromPodId: string, toPodId: string | null) {
-  const [rows] = await tx.run({
-    sql: `SELECT UserId FROM SwapMembers WHERE SwapId = @swapId AND Role = 'participant' AND PodId = @podId`,
-    params: { swapId, podId: fromPodId },
-    json: true,
-  });
-  for (const r of rows as { UserId: string }[]) tx.update('SwapMembers', { ...memberKey(swapId, r.UserId), PodId: toPodId });
+/** A new, unconfirmed and unshipped pairing. */
+function newAssignment(swapId: string, makerId: string, recipientId: string, createdBy: string) {
+  return {
+    SwapId: swapId,
+    MakerId: makerId,
+    RecipientId: recipientId,
+    CreatedBy: createdBy,
+    CreatedAt: now(),
+    ConfirmedAt: null,
+    ShippedAt: null,
+    Carrier: null,
+    TrackingNumber: null,
+  };
 }

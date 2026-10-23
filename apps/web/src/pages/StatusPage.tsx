@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 type Check = { ok: boolean; error?: string; roundTripMs?: number; message?: string | null };
-type Health = { status: string; spanner: Check; smtp: Check };
+type Health = { status: string; firestore: Check; smtp: Check };
 
 function StatusCard({ label, ok, detail }: { label: string; ok: boolean | null; detail?: string }) {
   const color = ok === null ? 'var(--taupe)' : ok ? 'var(--teal)' : 'var(--red)';
@@ -49,12 +49,12 @@ export default function StatusPage() {
       <h1>System status</h1>
       <StatusCard label="API" ok={apiOk} />
       <StatusCard
-        label="Spanner"
-        ok={health ? health.spanner.ok : apiOk === false ? false : null}
+        label="Firestore"
+        ok={health ? health.firestore.ok : apiOk === false ? false : null}
         detail={
-          health?.spanner.ok
-            ? `Wrote & read "${health.spanner.message}" in ${health.spanner.roundTripMs}ms`
-            : health?.spanner.error
+          health?.firestore.ok
+            ? `Wrote & read "${health.firestore.message}" in ${health.firestore.roundTripMs}ms`
+            : health?.firestore.error
         }
       />
       <StatusCard

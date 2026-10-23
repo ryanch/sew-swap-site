@@ -6,12 +6,11 @@
  * 5 live in Hawaii, 8 in Canada and 37 elsewhere in the US. Skill levels 1–5 are spread evenly
  * (10 each) and everyone starts in the Default pod with no pairings. The same 50 people
  * (demo01@example.test … demo50@example.test) are reused, so each run adds one new swap.
- * The emulator keeps data in memory, so run it again after restarting `spanner`.
+ * The emulator keeps data in memory, so run it again after restarting `firestore`.
  */
 import { randomUUID } from 'node:crypto';
-import { Spanner } from '@google-cloud/spanner';
 import { config } from '../config';
-import { database, spanner } from '../db/spanner';
+import { col, db, memberId, now } from '../db/firestore';
 import { validateAddress, type Address } from '../profile/address';
 import { addressColumns } from '../routes/profile';
 
@@ -89,7 +88,7 @@ const FIRST = [
 const LAST = ['Stitch', 'Baste', 'Hemming', 'Quilter', 'Bobbin', 'Thimble', 'Seamwell', 'Pinney', 'Selvage', 'Tuck'];
 
 async function main() {
-  if (!config.spanner.emulatorHost) throw new Error('This only runs against the Spanner emulator (SPANNER_EMULATOR_HOST).');
+  if (!process.env.FIRESTORE_EMULATOR_HOST) throw new Error('This only runs against the Firestore emulator (FIRESTORE_EMULATOR_HOST).');
   const adminEmail = config.auth.adminEmails[0];
   if (!adminEmail) throw new Error('Set ADMIN_EMAILS so the swap has an owner.');
 
@@ -112,28 +111,47 @@ async function main() {
   const swapId = randomUUID();
   const title = `Demo swap ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
 
-  await database.runTransactionAsync(async (tx) => {
+  await db.runTransaction(async (tx) => {
+    // Reads first: who already has an account (signing in made it, or an earlier run did).
     const emails = [adminEmail, ...people.map((p) => p.email)];
-    const [rows] = await tx.run({
-      sql: `SELECT UserId, Email FROM Users WHERE Email IN UNNEST(@emails)`,
-      params: { emails },
-      json: true,
-    });
-    const ids = new Map((rows as { UserId: string; Email: string }[]).map((r) => [r.Email, r.UserId]));
-    const userId = (email: string) => {
+    const found = await tx.getAll(...emails.map((e) => col.userEmails.doc(e)));
+    const ids = new Map(found.filter((s) => s.exists).map((s) => [s.id, (s.data() as { UserId: string }).UserId]));
+    const adminSnap = ids.has(adminEmail) ? await tx.get(col.users.doc(ids.get(adminEmail)!)) : null;
+    const adminRoles: string[] = (adminSnap?.data()?.Roles as string[] | undefined) ?? [];
+
+    const at = now();
+    const userId = (email: string, roles: string[] = []) => {
       let id = ids.get(email);
       if (!id) {
         id = randomUUID();
         ids.set(email, id);
-        tx.insert('Users', { UserId: id, Email: email, CreatedAt: Spanner.COMMIT_TIMESTAMP, UpdatedAt: Spanner.COMMIT_TIMESTAMP });
+        tx.create(col.userEmails.doc(email), { UserId: id });
+        tx.create(col.users.doc(id), {
+          UserId: id,
+          Email: email,
+          DisplayName: null,
+          GoogleSub: null,
+          Roles: roles,
+          RoleGrants: Object.fromEntries(roles.map((r) => [r, { GrantedBy: null, GrantedAt: at }])),
+          EmailVerifiedAt: null,
+          LastLoginAt: null,
+          CreatedAt: at,
+          UpdatedAt: at,
+        });
       }
       return id;
     };
 
     // The admin may not have signed in yet since the emulator restarted. Signing in later finds this account.
-    const adminId = userId(adminEmail);
-    tx.upsert('UserRoles', { UserId: adminId, Role: 'admin', GrantedBy: null, GrantedAt: Spanner.COMMIT_TIMESTAMP });
-    tx.insert('Swaps', {
+    const adminId = userId(adminEmail, ['admin']);
+    if (adminSnap && !adminRoles.includes('admin')) {
+      tx.set(
+        col.users.doc(adminId),
+        { Roles: [...adminRoles, 'admin'].sort(), RoleGrants: { admin: { GrantedBy: null, GrantedAt: at } }, UpdatedAt: at },
+        { merge: true },
+      );
+    }
+    tx.create(col.swaps.doc(swapId), {
       SwapId: swapId,
       Title: title,
       Description: 'Seeded for testing pods and pairing: 50 makers, 5 in Hawaii, 8 in Canada, 37 elsewhere in the US.',
@@ -142,32 +160,44 @@ async function main() {
       PartnersAnnounced: day(21),
       MakingDeadline: day(60),
       ShipBy: day(65),
+      MakersPublishedAt: null,
+      MakersPublishedBy: null,
       CreatedBy: adminId,
-      CreatedAt: Spanner.COMMIT_TIMESTAMP,
-      UpdatedAt: Spanner.COMMIT_TIMESTAMP,
+      CreatedAt: at,
+      UpdatedAt: at,
     });
-    tx.insert('SwapMembers', { SwapId: swapId, UserId: adminId, Role: 'manager', CreatedAt: Spanner.COMMIT_TIMESTAMP });
+    tx.create(col.swapMembers.doc(memberId(swapId, adminId, 'manager')), {
+      SwapId: swapId,
+      UserId: adminId,
+      Role: 'manager',
+      CreatedAt: at,
+    });
 
     for (const p of people) {
       const id = userId(p.email);
-      tx.upsert('UserProfiles', {
-        UserId: id,
-        ...addressColumns(p.address),
-        InstagramHandle: p.instagram,
-        InstagramStatus: 'public',
-        InstagramCheckedAt: Spanner.COMMIT_TIMESTAMP,
-        InstagramStrategy: 'seed',
-        UpdatedAt: Spanner.COMMIT_TIMESTAMP,
-      });
-      tx.insert('SwapMembers', {
+      tx.set(
+        col.userProfiles.doc(id),
+        {
+          UserId: id,
+          ...addressColumns(p.address),
+          InstagramHandle: p.instagram,
+          InstagramStatus: 'public',
+          InstagramCheckedAt: at,
+          InstagramStrategy: 'seed',
+          UpdatedAt: at,
+        },
+        { merge: true },
+      );
+      tx.create(col.swapMembers.doc(memberId(swapId, id, 'participant')), {
         SwapId: swapId,
         UserId: id,
         Role: 'participant',
         SkillLevel: p.skillLevel,
-        CreatedAt: Spanner.COMMIT_TIMESTAMP,
+        PodId: null,
+        InstagramPublicConfirmed: null,
+        CreatedAt: at,
       });
     }
-    await tx.commit();
   });
 
   console.log(`Created "${title}" with ${people.length} people.`);
@@ -176,8 +206,8 @@ async function main() {
 }
 
 main()
-  .then(() => {
-    spanner.close();
+  .then(async () => {
+    await db.terminate();
     process.exit(0);
   })
   .catch((err) => {

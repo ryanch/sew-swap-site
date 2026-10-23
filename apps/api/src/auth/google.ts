@@ -1,7 +1,7 @@
 import { CodeChallengeMethod, OAuth2Client } from 'google-auth-library';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { config } from '../config';
-import { database } from '../db/spanner';
+import { db } from '../db/firestore';
 import { randomToken } from './crypto';
 import { createSession } from './sessions';
 import { findOrLinkGoogleUser, type LoginResult } from './users';
@@ -59,14 +59,13 @@ export async function finishGoogleLogin(
   const payload = ticket.getPayload();
   if (!payload?.sub || !payload.email || !payload.email_verified) return null;
 
-  return database.runTransactionAsync(async (tx) => {
+  return db.runTransaction(async (tx) => {
     const login = await findOrLinkGoogleUser(tx, {
       sub: payload.sub,
       email: payload.email!,
       name: payload.name,
     });
     const sessionToken = createSession(tx, login.user.userId, req);
-    await tx.commit();
     return { sessionToken, ...login };
   });
 }

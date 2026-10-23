@@ -1,4 +1,4 @@
-/** Wait until web -> api -> Spanner/Mailpit are all up (the emulator bootstrap takes a few seconds). */
+/** Wait until web -> api -> Firestore/Mailpit are all up (the emulator takes a few seconds to start). */
 export default async function globalSetup() {
   const url = `${process.env.BASE_URL ?? 'http://localhost:5173'}/api/health`;
   const deadline = Date.now() + 90_000;

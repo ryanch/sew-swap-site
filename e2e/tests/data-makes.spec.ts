@@ -22,8 +22,7 @@ let cy: Person;
 const UPS_NUMBER = '1Z999AA10123456784';
 const USPS_NUMBER = '9400100000000000000000';
 
-// The email log sorts by a time shown to the second (see the fixme below), so the tests wait a
-// second between emails whose order they check.
+// Times are shown to the second, so the tests wait a second between emails whose dates they compare.
 const nextSecond = () => new Promise((r) => setTimeout(r, 1100));
 
 const summary = async (swapId: string) => getJson(admin.api, `/api/swaps/${swapId}/publish`);
@@ -230,10 +229,8 @@ test('the email log shows each person only their own sent emails, newest first',
   expect(log[2].body).not.toContain(`Maker ${run}`);
 });
 
-// Suspected app bug: GET /api/me/emails orders by its formatted SentAt string (whole seconds), not the
-// timestamp, so emails sent in the same second can come back in either order. It's a race, so this
-// can pass by luck; it's fixme so the suite stays stable. Expected to pass for good after a fix.
-test.fixme('emails sent within the same second are still newest first', async () => {
+// GET /api/me/emails sorts on the stored timestamp, not the whole-second string it sends.
+test('emails sent within the same second are still newest first', async () => {
   const swapId = await createSwap(admin.api, `Same second ${run}`);
   const a = await newMember('makessame', swapId, { ...US_ADDRESS, name: `Same ${run}` });
   await join(maker, swapId, US_ADDRESS, { checked: true });
@@ -245,10 +242,8 @@ test.fixme('emails sent within the same second are still newest first', async ()
   await a.api.dispose();
 });
 
-// Suspected app bug: timestamps are formatted with FORMAT_TIMESTAMP('%FT%TZ', …), which uses Spanner's
-// default time zone (America/Los_Angeles) but labels the result "Z". So every time the API sends is
-// 7 or 8 hours behind the real UTC time.
-test.fixme('times the API sends are in UTC', async () => {
+// Every time the API sends is UTC. (On Spanner, FORMAT_TIMESTAMP used Los Angeles time but said "Z".)
+test('times the API sends are in UTC', async () => {
   const near = (iso: string | null, label: string) =>
     expect(Math.abs(Date.parse(iso ?? '') - Date.now()), `${label}: ${iso}`).toBeLessThan(10 * 60_000);
   near((await summary(late)).publishedAt, 'publishedAt');

@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
-    "@google-cloud/spanner": "^7.16.0",
+    "@google-cloud/firestore": "^7.11.6",
     "fastify": "^5.2.0",
     "fastify-plugin": "^5.0.1",
     "google-auth-library": "^10.1.0",

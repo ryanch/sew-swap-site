@@ -1,13 +1,14 @@
-import { Spanner } from '@google-cloud/spanner';
+import type { Timestamp } from '@google-cloud/firestore';
 import type { FastifyInstance } from 'fastify';
 import { requireAuth } from '../auth/plugin';
 import { config } from '../config';
-import { database } from '../db/spanner';
-import { sendToMany, sendUserMail, type Recipient } from '../email/mailer';
+import { assignmentId, col, db, getMany, inTransaction, now, Problem, rows, toIso } from '../db/firestore';
+import { loadPeople, personName, type UserDoc } from '../db/people';
+import { sendToMany, sendUserMail, type EmailLogDoc, type Recipient } from '../email/mailer';
 import { makersPublishedEmail, packageShippedEmail, reminderEmail, shipReminderEmail } from '../email/templates';
 import { CARRIER_IDS, carrierLabel, normalizeTracking, toShipment, trackingUrl } from '../shipping/tracking';
-import { getSwap, swapParamsSchema } from '../swaps/access';
-import { countMembers, NAME_SQL, refuse } from './pods';
+import { getSwap, swapParamsSchema, type SwapDoc } from '../swaps/access';
+import { countMembers, refuse } from './pods';
 
 // Publishing makers and confirming them. Until the manager publishes, pairings stay the manager's
 // private view (routes/pods.ts). After that, each maker sees who they make for and confirms.
@@ -18,72 +19,63 @@ export const MAX_REMINDERS_PER_BATCH = 50;
 /** Someone reminded this recently isn't reminded again. */
 const REMINDER_GAP_HOURS = 24;
 
-type MakeRow = {
+/** The `assignments` doc: maker makes for recipient. */
+type AssignmentDoc = {
   SwapId: string;
-  Title: string;
-  ShipBy: string;
+  MakerId: string;
   RecipientId: string;
-  Name: string;
-  InstagramHandle: string | null;
-  RecipientName: string | null;
-  AddressLine1: string | null;
-  AddressLine2: string | null;
-  City: string | null;
-  Region: string | null;
-  PostalCode: string | null;
-  Country: string | null;
-  ConfirmedAt: string | null;
-  ShippedAt: string | null;
-  Carrier: string | null;
-  TrackingNumber: string | null;
+  ConfirmedAt?: Timestamp | null;
+  ShippedAt?: Timestamp | null;
+  Carrier?: string | null;
+  TrackingNumber?: string | null;
 };
+
+const shipment = (a: AssignmentDoc) =>
+  toShipment({ ShippedAt: toIso(a.ShippedAt), Carrier: a.Carrier ?? null, TrackingNumber: a.TrackingNumber ?? null });
+
+/** Earlier Timestamps first, to the nanosecond, so things done in the same second keep their order. */
+const byTime = (a: Timestamp, b: Timestamp) => a.seconds - b.seconds || a.nanoseconds - b.nanoseconds;
+
+const pairingsOf = async (swapId: string) => rows<AssignmentDoc>(await col.assignments.where('SwapId', '==', swapId).get());
 
 type ConfirmBody = { seenInstagram?: boolean; reviewedAddress?: boolean; canShip?: boolean };
 type ShipBody = { carrier: string; trackingNumber: string };
 
 /** What each kind of reminder is for: who still needs one, and the email it sends. */
 const REMINDERS = {
-  confirm: { kind: 'confirm_reminder', pending: 'a.ConfirmedAt IS NULL', email: reminderEmail },
-  ship: { kind: 'ship_reminder', pending: 'a.ShippedAt IS NULL', email: shipReminderEmail },
+  confirm: { kind: 'confirm_reminder', pending: (a: AssignmentDoc) => !a.ConfirmedAt, email: reminderEmail },
+  ship: { kind: 'ship_reminder', pending: (a: AssignmentDoc) => !a.ShippedAt, email: shipReminderEmail },
 } as const;
 
 /** Where the manager stands: how many are paired, and how many makers have confirmed. */
 async function publishSummary(swapId: string) {
-  const [[pairs], participants, withoutRecipient, withoutMaker] = await Promise.all([
-    database.run({
-      sql: `SELECT COUNT(*) AS Pairings, COUNTIF(ConfirmedAt IS NOT NULL) AS PairingsConfirmed,
-                   COUNTIF(ShippedAt IS NOT NULL) AS PairingsShipped,
-                   COUNT(DISTINCT MakerId) AS Makers,
-                   COUNT(DISTINCT IF(ConfirmedAt IS NULL, MakerId, NULL)) AS MakersPending,
-                   COUNT(DISTINCT IF(ShippedAt IS NULL, MakerId, NULL)) AS MakersUnshipped
-            FROM Assignments WHERE SwapId = @swapId`,
-      params: { swapId },
-      json: true,
-    }),
-    countMembers(database, swapId, {}),
-    countMembers(database, swapId, { needs: 'recipient' }),
-    countMembers(database, swapId, { needs: 'maker' }),
+  const [pairs, participants, withoutRecipient, withoutMaker] = await Promise.all([
+    pairingsOf(swapId),
+    countMembers(swapId, {}),
+    countMembers(swapId, { needs: 'recipient' }),
+    countMembers(swapId, { needs: 'maker' }),
   ]);
-  const p = pairs[0] as {
-    Pairings: number;
-    PairingsConfirmed: number;
-    PairingsShipped: number;
-    Makers: number;
-    MakersPending: number;
-    MakersUnshipped: number;
-  };
+  const makers = new Set(pairs.map((a) => a.MakerId));
+  const makersPending = new Set(pairs.filter((a) => !a.ConfirmedAt).map((a) => a.MakerId));
+  const makersUnshipped = new Set(pairs.filter((a) => !a.ShippedAt).map((a) => a.MakerId));
   return {
     participants,
     withoutRecipient,
     withoutMaker,
-    pairings: Number(p.Pairings),
-    pairingsConfirmed: Number(p.PairingsConfirmed),
-    makers: Number(p.Makers),
-    makersConfirmed: Number(p.Makers) - Number(p.MakersPending),
-    pairingsShipped: Number(p.PairingsShipped),
+    pairings: pairs.length,
+    pairingsConfirmed: pairs.filter((a) => a.ConfirmedAt).length,
+    makers: makers.size,
+    makersConfirmed: makers.size - makersPending.size,
+    pairingsShipped: pairs.filter((a) => a.ShippedAt).length,
     // Makers who have shipped to everyone they make for.
-    makersShipped: Number(p.Makers) - Number(p.MakersUnshipped),
+    makersShipped: makers.size - makersUnshipped.size,
   };
+}
+
+/** Email addresses of `userIds`. Anyone without a user doc is left out. */
+async function recipients(userIds: string[]): Promise<Recipient[]> {
+  const users = await getMany<UserDoc>(col.users, userIds);
+  return [...new Set(userIds)].filter((id) => users.has(id)).map((id) => ({ userId: id, email: users.get(id)!.Email }));
 }
 
 export async function makeRoutes(app: FastifyInstance) {
@@ -122,33 +114,20 @@ export async function makeRoutes(app: FastifyInstance) {
     async (req, reply) => {
       if (await refuse(req, reply)) return reply;
       const { swapId } = req.params;
-      const published = await database.runTransactionAsync(async (tx) => {
-        const [rows] = await tx.run({
-          sql: `SELECT MakersPublishedAt IS NOT NULL AS Published FROM Swaps WHERE SwapId = @swapId`,
-          params: { swapId },
-          json: true,
-        });
-        if ((rows[0] as { Published: boolean }).Published) {
-          await tx.rollback();
-          return false;
-        }
-        tx.update('Swaps', { SwapId: swapId, MakersPublishedAt: Spanner.COMMIT_TIMESTAMP, MakersPublishedBy: req.user!.userId });
-        await tx.commit();
+      const published = await inTransaction(reply, async (tx) => {
+        const ref = col.swaps.doc(swapId);
+        const swap = (await tx.get(ref)).data() as SwapDoc;
+        if (swap.MakersPublishedAt) throw new Problem('Makers for this swap are already published.', 409);
+        tx.update(ref, { MakersPublishedAt: now(), MakersPublishedBy: req.user!.userId });
         return true;
       });
-      if (!published) return reply.code(409).send({ error: 'Makers for this swap are already published.' });
+      if (!published) return reply;
 
-      const swap = (await getSwap(swapId))!;
-      const [rows] = await database.run({
-        sql: `SELECT DISTINCT a.MakerId AS UserId, u.Email FROM Assignments a JOIN Users u ON u.UserId = a.MakerId
-              WHERE a.SwapId = @swapId`,
-        params: { swapId },
-        json: true,
-      });
-      const makers = (rows as { UserId: string; Email: string }[]).map((r) => ({ userId: r.UserId, email: r.Email }));
-      const email = makersPublishedEmail(swap, config.appBaseUrl);
+      const [swap, pairs] = await Promise.all([getSwap(swapId), pairingsOf(swapId)]);
+      const makers = await recipients(pairs.map((a) => a.MakerId));
+      const email = makersPublishedEmail(swap!, config.appBaseUrl);
       const { sent, failed } = await sendToMany(makers, (m) => sendUserMail(m, 'makers_published', swapId, email), req.log);
-      return { publishedAt: swap.makersPublishedAt, emailed: sent, failed };
+      return { publishedAt: swap!.makersPublishedAt, emailed: sent, failed };
     },
   );
 
@@ -185,19 +164,19 @@ export async function makeRoutes(app: FastifyInstance) {
       const ids = [...new Set(req.body.userIds)];
       const kind = req.body.kind ?? 'confirm';
       const reminder = REMINDERS[kind];
-      const [rows] = await database.run({
-        sql: `SELECT DISTINCT a.MakerId AS UserId, u.Email,
-                     EXISTS (SELECT 1 FROM EmailLog e
-                             WHERE e.SwapId = a.SwapId AND e.Kind = @kind AND e.UserId = a.MakerId
-                               AND e.Status IN ('sent', 'sending')
-                               AND e.SentAt > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL ${REMINDER_GAP_HOURS} HOUR)) AS Recent
-              FROM Assignments a JOIN Users u ON u.UserId = a.MakerId
-              WHERE a.SwapId = @swapId AND a.MakerId IN UNNEST(@ids) AND ${reminder.pending}`,
-        params: { swapId, ids, kind: reminder.kind },
-        json: true,
-      });
-      const pending = rows as { UserId: string; Email: string; Recent: boolean }[];
-      const due: Recipient[] = pending.filter((r) => !r.Recent).map((r) => ({ userId: r.UserId, email: r.Email }));
+      const wanted = new Set(ids);
+      const [pairs, log] = await Promise.all([
+        pairingsOf(swapId),
+        col.emailLog.where('SwapId', '==', swapId).where('Kind', '==', reminder.kind).get(),
+      ]);
+      const pending = await recipients(pairs.filter((a) => wanted.has(a.MakerId) && reminder.pending(a)).map((a) => a.MakerId));
+      const since = Date.now() - REMINDER_GAP_HOURS * 60 * 60 * 1000;
+      const recent = new Set(
+        rows<EmailLogDoc>(log)
+          .filter((e) => (e.Status === 'sent' || e.Status === 'sending') && e.SentAt.toMillis() > since)
+          .map((e) => e.UserId),
+      );
+      const due = pending.filter((r) => !recent.has(r.userId));
       const email = reminder.email(swap, config.appBaseUrl);
       const { sent, failed } = await sendToMany(due, (m) => sendUserMail(m, reminder.kind, swapId, email), req.log);
       const skippedDone = ids.length - pending.length;
@@ -212,43 +191,43 @@ export async function makeRoutes(app: FastifyInstance) {
 
   // Who the caller makes for, in swaps whose makers are published. Nothing shows before that.
   app.get('/api/me/makes', auth, async (req) => {
-    const [rows] = await database.run({
-      sql: `SELECT a.SwapId, s.Title, FORMAT_DATE('%F', s.ShipBy) AS ShipBy, a.RecipientId, ${NAME_SQL} AS Name,
-                   p.InstagramHandle, p.RecipientName, p.AddressLine1, p.AddressLine2, p.City, p.Region, p.PostalCode, p.Country,
-                   FORMAT_TIMESTAMP('%FT%TZ', a.ConfirmedAt) AS ConfirmedAt,
-                   FORMAT_TIMESTAMP('%FT%TZ', a.ShippedAt) AS ShippedAt, a.Carrier, a.TrackingNumber
-            FROM Assignments a
-            JOIN Swaps s ON s.SwapId = a.SwapId
-            JOIN Users u ON u.UserId = a.RecipientId
-            LEFT JOIN UserProfiles p ON p.UserId = a.RecipientId
-            WHERE a.MakerId = @userId AND s.MakersPublishedAt IS NOT NULL
-            ORDER BY s.ShipBy, s.Title, Name`,
-      params: { userId: req.user!.userId },
-      json: true,
-    });
-    return {
-      makes: (rows as MakeRow[]).map((r) => ({
-        swap: { swapId: r.SwapId, title: r.Title, shipBy: r.ShipBy },
-        recipient: {
-          userId: r.RecipientId,
-          name: r.Name,
-          instagramHandle: r.InstagramHandle,
-          address: r.Country
-            ? {
-                name: r.RecipientName ?? '',
-                line1: r.AddressLine1 ?? '',
-                line2: r.AddressLine2 ?? '',
-                city: r.City ?? '',
-                region: r.Region ?? '',
-                postalCode: r.PostalCode ?? '',
-                country: r.Country,
-              }
-            : null,
-        },
-        confirmedAt: r.ConfirmedAt,
-        shipped: toShipment(r),
-      })),
-    };
+    const mine = rows<AssignmentDoc>(await col.assignments.where('MakerId', '==', req.user!.userId).get());
+    const [swaps, { users, profiles }] = await Promise.all([
+      getMany<SwapDoc>(col.swaps, mine.map((a) => a.SwapId)),
+      loadPeople(mine.map((a) => a.RecipientId)),
+    ]);
+    const makes = mine
+      .filter((a) => swaps.get(a.SwapId)?.MakersPublishedAt && users.has(a.RecipientId))
+      .map((a) => {
+        const s = swaps.get(a.SwapId)!;
+        const p = profiles.get(a.RecipientId);
+        return {
+          swap: { swapId: a.SwapId, title: s.Title, shipBy: s.ShipBy },
+          recipient: {
+            userId: a.RecipientId,
+            name: personName(users.get(a.RecipientId)!, p),
+            instagramHandle: p?.InstagramHandle ?? null,
+            address: p?.Country
+              ? {
+                  name: p.RecipientName ?? '',
+                  line1: p.AddressLine1 ?? '',
+                  line2: p.AddressLine2 ?? '',
+                  city: p.City ?? '',
+                  region: p.Region ?? '',
+                  postalCode: p.PostalCode ?? '',
+                  country: p.Country,
+                }
+              : null,
+          },
+          confirmedAt: toIso(a.ConfirmedAt),
+          shipped: shipment(a),
+        };
+      });
+    const cmp = (x: string, y: string) => (x < y ? -1 : x > y ? 1 : 0);
+    makes.sort(
+      (x, y) => cmp(x.swap.shipBy, y.swap.shipBy) || cmp(x.swap.title, y.swap.title) || cmp(x.recipient.name, y.recipient.name),
+    );
+    return { makes };
   });
 
   // The maker ticks three boxes on the page; they're checked here too.
@@ -272,27 +251,15 @@ export async function makeRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const { swapId, recipientId } = req.params;
       const makerId = req.user!.userId;
-      const confirmedAt = await database.runTransactionAsync(async (tx) => {
-        const [rows] = await tx.run({
-          sql: `SELECT FORMAT_TIMESTAMP('%FT%TZ', a.ConfirmedAt) AS ConfirmedAt FROM Assignments a
-                JOIN Swaps s ON s.SwapId = a.SwapId
-                WHERE a.SwapId = @swapId AND a.MakerId = @makerId AND a.RecipientId = @recipientId
-                  AND s.MakersPublishedAt IS NOT NULL`,
-          params: { swapId, makerId, recipientId },
-          json: true,
-        });
-        const row = rows[0] as { ConfirmedAt: string | null } | undefined;
-        if (!row || row.ConfirmedAt) {
-          await tx.rollback();
-          return row ? row.ConfirmedAt : undefined;
-        }
+      const ref = col.assignments.doc(assignmentId(swapId, makerId, recipientId));
+      const confirmedAt = await db.runTransaction(async (tx) => {
+        const [pair, swap] = await tx.getAll(ref, col.swaps.doc(swapId));
+        if (!pair.exists || !(swap.data() as SwapDoc | undefined)?.MakersPublishedAt) return undefined;
+        const done = (pair.data() as AssignmentDoc).ConfirmedAt;
+        if (done) return toIso(done);
         const b = req.body ?? {};
-        if (!(b.seenInstagram && b.reviewedAddress && b.canShip)) {
-          await tx.rollback();
-          return null;
-        }
-        tx.update('Assignments', { SwapId: swapId, MakerId: makerId, RecipientId: recipientId, ConfirmedAt: Spanner.COMMIT_TIMESTAMP });
-        await tx.commit();
+        if (!(b.seenInstagram && b.reviewedAddress && b.canShip)) return null;
+        tx.update(ref, { ConfirmedAt: now() });
         return 'now';
       });
       // Missing and not-yet-published look the same, so nothing leaks before publishing.
@@ -329,38 +296,20 @@ export async function makeRoutes(app: FastifyInstance) {
       const { swapId, recipientId } = req.params;
       const makerId = req.user!.userId;
       const trackingNumber = req.validationError ? null : normalizeTracking(req.body.trackingNumber);
-      const result = await database.runTransactionAsync(async (tx) => {
-        const [rows] = await tx.run({
-          sql: `SELECT a.ConfirmedAt IS NOT NULL AS Confirmed, a.Carrier, a.TrackingNumber FROM Assignments a
-                JOIN Swaps s ON s.SwapId = a.SwapId
-                WHERE a.SwapId = @swapId AND a.MakerId = @makerId AND a.RecipientId = @recipientId
-                  AND s.MakersPublishedAt IS NOT NULL`,
-          params: { swapId, makerId, recipientId },
-          json: true,
-        });
-        const row = rows[0] as { Confirmed: boolean; Carrier: string | null; TrackingNumber: string | null } | undefined;
+      const ref = col.assignments.doc(assignmentId(swapId, makerId, recipientId));
+      const result = await db.runTransaction(async (tx) => {
+        const [pair, swap] = await tx.getAll(ref, col.swaps.doc(swapId));
+        const row = pair.exists && (swap.data() as SwapDoc | undefined)?.MakersPublishedAt ? (pair.data() as AssignmentDoc) : undefined;
         const outcome = !row
           ? 'missing'
-          : !row.Confirmed
+          : !row.ConfirmedAt
             ? 'unconfirmed'
             : !trackingNumber
               ? 'invalid'
               : row.Carrier === req.body.carrier && row.TrackingNumber === trackingNumber
                 ? 'unchanged'
                 : 'shipped';
-        if (outcome !== 'shipped') {
-          await tx.rollback();
-          return outcome;
-        }
-        tx.update('Assignments', {
-          SwapId: swapId,
-          MakerId: makerId,
-          RecipientId: recipientId,
-          ShippedAt: Spanner.COMMIT_TIMESTAMP,
-          Carrier: req.body.carrier,
-          TrackingNumber: trackingNumber,
-        });
-        await tx.commit();
+        if (outcome === 'shipped') tx.update(ref, { ShippedAt: now(), Carrier: req.body.carrier, TrackingNumber: trackingNumber });
         return outcome;
       });
       if (result === 'missing') return reply.code(404).send({ error: "You aren't making for this person." });
@@ -369,11 +318,8 @@ export async function makeRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: 'Please enter the tracking number from your shipping receipt, and pick the carrier.' });
       }
       if (result === 'shipped') {
-        const [swap, [users]] = await Promise.all([
-          getSwap(swapId),
-          database.run({ sql: 'SELECT Email FROM Users WHERE UserId = @recipientId', params: { recipientId }, json: true }),
-        ]);
-        const to = users[0] as { Email: string } | undefined;
+        const [swap, user] = await Promise.all([getSwap(swapId), col.users.doc(recipientId).get()]);
+        const to = user.data() as UserDoc | undefined;
         const { carrier } = req.body;
         const email = packageShippedEmail(
           swap!,
@@ -391,16 +337,20 @@ export async function makeRoutes(app: FastifyInstance) {
   );
 
   app.get('/api/me/emails', auth, async (req) => {
-    const [rows] = await database.run({
-      sql: `SELECT EmailId, FORMAT_TIMESTAMP('%FT%TZ', SentAt) AS SentAt, Kind, SwapId, Subject, Body
-            FROM EmailLog WHERE UserId = @userId AND Status = 'sent' ORDER BY SentAt DESC LIMIT 100`,
-      params: { userId: req.user!.userId },
-      json: true,
-    });
+    const log = rows<EmailLogDoc>(await col.emailLog.where('UserId', '==', req.user!.userId).get());
+    const sent = log
+      .filter((e) => e.Status === 'sent')
+      .sort((a, b) => byTime(b.SentAt, a.SentAt))
+      .slice(0, 100);
     return {
-      emails: (rows as { EmailId: string; SentAt: string; Kind: string; SwapId: string | null; Subject: string; Body: string }[]).map(
-        (r) => ({ emailId: r.EmailId, sentAt: r.SentAt, kind: r.Kind, swapId: r.SwapId, subject: r.Subject, body: r.Body }),
-      ),
+      emails: sent.map((e) => ({
+        emailId: e.EmailId,
+        sentAt: toIso(e.SentAt),
+        kind: e.Kind,
+        swapId: e.SwapId,
+        subject: e.Subject,
+        body: e.Body,
+      })),
     };
   });
 }

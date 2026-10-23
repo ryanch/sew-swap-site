@@ -12,12 +12,6 @@ export const config = {
   port: Number(process.env.PORT ?? 8080),
   projectId: required('GOOGLE_CLOUD_PROJECT'),
   appBaseUrl,
-  spanner: {
-    instance: required('SPANNER_INSTANCE'),
-    database: required('SPANNER_DATABASE'),
-    emulatorHost: process.env.SPANNER_EMULATOR_HOST,
-  },
-  migrationsDir: process.env.MIGRATIONS_DIR ?? '/migrations',
   smtp: {
     host: required('SMTP_HOST'),
     port: Number(process.env.SMTP_PORT ?? 587),

@@ -1,8 +1,7 @@
 import Fastify from 'fastify';
 import { config } from './config';
 import { authPlugin } from './auth/plugin';
-import { bootstrapEmulator } from './db/bootstrap';
-import { spanner } from './db/spanner';
+import { db } from './db/firestore';
 import { adminRoutes } from './routes/admin';
 import { authRoutes } from './routes/auth';
 import { healthRoutes } from './routes/health';
@@ -18,7 +17,6 @@ async function main() {
   // (plus SameSite=Lax cookies) blocks CSRF on state-changing routes.
   app.removeContentTypeParser('text/plain');
 
-  await bootstrapEmulator(app.log);
   await app.register(authPlugin);
   await app.register(healthRoutes);
   await app.register(authRoutes);
@@ -33,7 +31,7 @@ async function main() {
     process.on(signal, async () => {
       app.log.info(`${signal} received, shutting down`);
       await app.close();
-      spanner.close();
+      await db.terminate();
       process.exit(0);
     });
   }

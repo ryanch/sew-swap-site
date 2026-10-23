@@ -1,76 +1,82 @@
 import { randomUUID } from 'node:crypto';
-import { Spanner, type Transaction } from '@google-cloud/spanner';
-import { grantBootstrapAdmin, rolesSubquery, type GlobalRole } from './roles';
+import type { DocumentReference, Transaction } from '@google-cloud/firestore';
+import { col, now } from '../db/firestore';
+import { needsBootstrapAdmin, withRole, type GlobalRole } from './roles';
 
 export type AuthUser = { userId: string; email: string; displayName: string | null; roles: GlobalRole[] };
 export type LoginResult = { user: AuthUser; isNewUser: boolean };
 
-type UserRow = {
+/** The `users/{UserId}` fields sign-in reads. */
+export type UserRow = {
   UserId: string;
   Email: string;
   DisplayName: string | null;
   GoogleSub: string | null;
-  Roles: GlobalRole[];
+  Roles?: GlobalRole[];
 };
-
-const USER_COLUMNS = `u.UserId, u.Email, u.DisplayName, u.GoogleSub, ${rolesSubquery('u')}`;
 
 export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
 export function toAuthUser(row: Pick<UserRow, 'UserId' | 'Email' | 'DisplayName' | 'Roles'>): AuthUser {
-  return { userId: row.UserId, email: row.Email, displayName: row.DisplayName, roles: row.Roles ?? [] };
+  return { userId: row.UserId, email: row.Email, displayName: row.DisplayName ?? null, roles: row.Roles ?? [] };
 }
 
-async function findOne(tx: Transaction, where: string, params: Record<string, string>) {
-  const [rows] = await tx.run({
-    sql: `SELECT ${USER_COLUMNS} FROM Users u WHERE ${where} LIMIT 1`,
-    params,
-    json: true,
-  });
-  return (rows[0] as UserRow | undefined) ?? null;
+/** Follows a userEmails/userGoogleSubs doc to its user. */
+async function findBy(tx: Transaction, indexRef: DocumentReference) {
+  const index = await tx.get(indexRef);
+  if (!index.exists) return null;
+  const user = await tx.get(col.users.doc(index.get('UserId') as string));
+  return user.exists ? (user.data() as UserRow) : null;
 }
 
-function createUser(tx: Transaction, email: string, extra: Partial<UserRow> = {}): AuthUser {
+/** The `RoleGrants.admin` entry for ADMIN_EMAILS users: granted by no one. */
+const bootstrapGrant = () => ({ GrantedBy: null, GrantedAt: now() });
+
+function createUser(tx: Transaction, email: string, extra: { DisplayName?: string | null; GoogleSub?: string | null } = {}): LoginResult {
+  const ts = now();
+  const admin = needsBootstrapAdmin(email, []);
   const row = {
     UserId: randomUUID(),
     Email: email,
     DisplayName: extra.DisplayName ?? null,
     GoogleSub: extra.GoogleSub ?? null,
-    EmailVerifiedAt: Spanner.COMMIT_TIMESTAMP,
-    LastLoginAt: Spanner.COMMIT_TIMESTAMP,
-    CreatedAt: Spanner.COMMIT_TIMESTAMP,
-    UpdatedAt: Spanner.COMMIT_TIMESTAMP,
+    Roles: admin ? (['admin'] as GlobalRole[]) : [],
+    RoleGrants: admin ? { admin: bootstrapGrant() } : {},
+    EmailVerifiedAt: ts,
+    LastLoginAt: ts,
+    CreatedAt: ts,
+    UpdatedAt: ts,
   };
-  tx.insert('Users', row);
-  return toAuthUser({ ...row, Roles: [] });
+  tx.create(col.users.doc(row.UserId), row);
+  tx.create(col.userEmails.doc(email), { UserId: row.UserId });
+  if (row.GoogleSub) tx.create(col.userGoogleSubs.doc(row.GoogleSub), { UserId: row.UserId });
+  return { user: toAuthUser(row), isNewUser: true };
 }
 
-function markLoggedIn(tx: Transaction, userId: string, extra: Record<string, unknown> = {}) {
-  tx.update('Users', {
-    UserId: userId,
-    EmailVerifiedAt: Spanner.COMMIT_TIMESTAMP,
-    LastLoginAt: Spanner.COMMIT_TIMESTAMP,
-    UpdatedAt: Spanner.COMMIT_TIMESTAMP,
-    ...extra,
-  });
-}
-
-/** Every login path ends here, so ADMIN_EMAILS users get the admin role on sign-in. */
-function loggedIn(tx: Transaction, user: AuthUser, isNewUser: boolean): LoginResult {
-  return { user: grantBootstrapAdmin(tx, user), isNewUser };
+/**
+ * Every sign-in of an existing user ends here, after all the transaction's reads.
+ * ADMIN_EMAILS users get the admin role back if it's missing.
+ */
+function markLoggedIn(tx: Transaction, row: UserRow, extra: Record<string, unknown> = {}): LoginResult {
+  const ts = now();
+  let roles = row.Roles ?? [];
+  const update: Record<string, unknown> = { EmailVerifiedAt: ts, LastLoginAt: ts, UpdatedAt: ts, ...extra };
+  if (needsBootstrapAdmin(row.Email, roles)) {
+    roles = withRole(roles, 'admin');
+    update.Roles = roles;
+    update['RoleGrants.admin'] = bootstrapGrant();
+  }
+  tx.update(col.users.doc(row.UserId), update);
+  return { user: toAuthUser({ ...row, Roles: roles }), isNewUser: false };
 }
 
 /** Email-token login: proving control of the inbox signs up or signs in. */
 export async function findOrCreateByEmail(tx: Transaction, rawEmail: string): Promise<LoginResult> {
   const email = normalizeEmail(rawEmail);
-  const existing = await findOne(tx, 'u.Email = @email', { email });
-  if (existing) {
-    markLoggedIn(tx, existing.UserId);
-    return loggedIn(tx, toAuthUser(existing), false);
-  }
-  return loggedIn(tx, createUser(tx, email), true);
+  const existing = await findBy(tx, col.userEmails.doc(email));
+  return existing ? markLoggedIn(tx, existing) : createUser(tx, email);
 }
 
 /** Google login: match by Google account id, then by verified email (linking it), else create. */
@@ -79,20 +85,19 @@ export async function findOrLinkGoogleUser(
   google: { sub: string; email: string; name?: string },
 ): Promise<LoginResult> {
   const email = normalizeEmail(google.email);
-  const bySub = await findOne(tx, 'u.GoogleSub = @sub', { sub: google.sub });
-  if (bySub) {
-    markLoggedIn(tx, bySub.UserId);
-    return loggedIn(tx, toAuthUser(bySub), false);
-  }
+  const bySub = await findBy(tx, col.userGoogleSubs.doc(google.sub));
+  if (bySub) return markLoggedIn(tx, bySub);
 
-  const byEmail = await findOne(tx, 'u.Email = @email', { email });
+  const byEmail = await findBy(tx, col.userEmails.doc(email));
   if (byEmail) {
     const extra: Record<string, unknown> = {};
-    if (!byEmail.GoogleSub) extra.GoogleSub = google.sub;
+    if (!byEmail.GoogleSub) {
+      extra.GoogleSub = google.sub;
+      tx.create(col.userGoogleSubs.doc(google.sub), { UserId: byEmail.UserId });
+    }
     if (!byEmail.DisplayName && google.name) extra.DisplayName = google.name;
-    markLoggedIn(tx, byEmail.UserId, extra);
-    return loggedIn(tx, toAuthUser({ ...byEmail, DisplayName: byEmail.DisplayName ?? google.name ?? null }), false);
+    return markLoggedIn(tx, { ...byEmail, DisplayName: byEmail.DisplayName ?? google.name ?? null }, extra);
   }
 
-  return loggedIn(tx, createUser(tx, email, { GoogleSub: google.sub, DisplayName: google.name ?? null }), true);
+  return createUser(tx, email, { GoogleSub: google.sub, DisplayName: google.name ?? null });
 }

@@ -1,22 +1,22 @@
-import { Spanner, type Transaction } from '@google-cloud/spanner';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { config } from '../config';
 import type { AuthUser } from './users';
 
-/** Site-wide roles, stored in UserRoles. Admin can do everything; swap_manager can create swaps. */
+/** Site-wide roles, stored in the user doc's sorted `Roles` array. Admin can do everything; swap_manager can create swaps. */
 export const GLOBAL_ROLES = ['admin', 'swap_manager'] as const;
 export type GlobalRole = (typeof GLOBAL_ROLES)[number];
 
 /**
- * Per-swap roles. They will key the SwapMembers table (SwapId, UserId, Role) once swaps exist.
+ * Per-swap roles, stored in swapMembers docs (one per swap, user and role).
  * A manager runs a swap they created or were added to; a helper is assigned pods; a participant signs up.
  */
 export const SWAP_ROLES = ['manager', 'helper', 'participant'] as const;
 export type SwapRole = (typeof SWAP_ROLES)[number];
 
-/** Spanner subquery selecting a user's global roles; `alias` is the Users table alias. */
-export const rolesSubquery = (alias: string) =>
-  `ARRAY(SELECT r.Role FROM UserRoles r WHERE r.UserId = ${alias}.UserId ORDER BY r.Role) AS Roles`;
+/** `roles` plus `role`, sorted and without repeats, as `Roles` is stored. */
+export function withRole(roles: GlobalRole[], role: GlobalRole): GlobalRole[] {
+  return [...new Set([...roles, role])].sort();
+}
 
 export function hasRole(user: AuthUser | null, role: GlobalRole): boolean {
   return !!user && (user.roles.includes('admin') || user.roles.includes(role));
@@ -35,9 +35,7 @@ export function isBootstrapAdmin(email: string): boolean {
   return config.auth.adminEmails.includes(email);
 }
 
-/** Buffers the admin grant in the login transaction if the user is in ADMIN_EMAILS and lacks it. */
-export function grantBootstrapAdmin(tx: Transaction, user: AuthUser): AuthUser {
-  if (!isBootstrapAdmin(user.email) || user.roles.includes('admin')) return user;
-  tx.insert('UserRoles', { UserId: user.userId, Role: 'admin', GrantedBy: null, GrantedAt: Spanner.COMMIT_TIMESTAMP });
-  return { ...user, roles: [...user.roles, 'admin'].sort() as GlobalRole[] };
+/** True when a sign-in should (re)grant admin: the email is in ADMIN_EMAILS and the role is missing. */
+export function needsBootstrapAdmin(email: string, roles: GlobalRole[]): boolean {
+  return isBootstrapAdmin(email) && !roles.includes('admin');
 }

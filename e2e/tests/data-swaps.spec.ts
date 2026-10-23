@@ -148,12 +148,7 @@ test('sign-up status is upcoming, open or closed, and only open swaps can be joi
 });
 
 test('sign-up opens and closes on UTC days, both end days included', async () => {
-  // Suspected app bug: Spanner's CURRENT_DATE() uses America/Los_Angeles unless given a time zone,
-  // not UTC as CLAUDE.md says. Between midnight UTC and midnight in Los Angeles, a swap opening
-  // "today" (UTC) is still upcoming and one that closed "yesterday" is still open.
-  const utcDay = new Date().toISOString().slice(0, 10);
-  const laDay = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
-  test.fixme(utcDay !== laDay, `UTC (${utcDay}) and Los Angeles (${laDay}) are on different days; the API uses Los Angeles`);
+  // Days are UTC days. (On Spanner, CURRENT_DATE() used Los Angeles time.)
   await checkStatuses([
     ['opens tomorrow', 1, 5, 'upcoming', 403],
     ['opens today', 0, 3, 'open', 200],

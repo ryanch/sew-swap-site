@@ -1,25 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { Spanner } from '@google-cloud/spanner';
-import { database } from '../db/spanner';
+import { col, now } from '../db/firestore';
 import { mailer, sendMail } from '../email/mailer';
 
-async function checkSpanner() {
+async function checkFirestore() {
   const started = Date.now();
   try {
-    const id = randomUUID();
-    await database.table('HelloMessages').insert({
-      Id: id,
-      Message: 'Hello from Sew Swap',
-      CreatedAt: Spanner.COMMIT_TIMESTAMP,
-    });
-    const [rows] = await database.run({
-      sql: 'SELECT Message FROM HelloMessages WHERE Id = @id',
-      params: { id },
-      json: true,
-    });
-    const row = rows[0] as { Message?: string } | undefined;
-    return { ok: true, roundTripMs: Date.now() - started, message: row?.Message ?? null };
+    const ref = col.hello.doc(randomUUID());
+    await ref.create({ Message: 'Hello from Sew Swap', CreatedAt: now() });
+    const message = ((await ref.get()).data()?.Message as string | undefined) ?? null;
+    await ref.delete();
+    return { ok: true, roundTripMs: Date.now() - started, message };
   } catch (err) {
     return { ok: false, error: (err as Error).message };
   }
@@ -36,10 +27,10 @@ async function checkSmtp() {
 
 export async function healthRoutes(app: FastifyInstance) {
   app.get('/api/health', async (_req, reply) => {
-    const [spanner, smtp] = await Promise.all([checkSpanner(), checkSmtp()]);
-    const ok = spanner.ok && smtp.ok;
+    const [firestore, smtp] = await Promise.all([checkFirestore(), checkSmtp()]);
+    const ok = firestore.ok && smtp.ok;
     reply.code(ok ? 200 : 503);
-    return { status: ok ? 'ok' : 'degraded', spanner, smtp };
+    return { status: ok ? 'ok' : 'degraded', firestore, smtp };
   });
 
   app.post('/api/hello-email', async () => {
