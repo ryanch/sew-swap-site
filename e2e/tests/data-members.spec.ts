@@ -14,7 +14,7 @@ import {
   type Address,
   type User,
 } from '../helpers/api';
-import { uniqueHandle } from '../helpers/signup';
+import { nameFields, uniqueHandle } from '../helpers/signup';
 
 // GET /api/swaps/:swapId/members: every filter, filters together, and keyset pagination, on a small
 // swap where the right answer for each is known. Also GET …/members/:userId.
@@ -34,12 +34,12 @@ const p = {} as Record<Key, Person>;
 const at = (overrides: Partial<Address>): Address => ({ ...US_ADDRESS, ...overrides });
 // Names are the same every run; the filters only ever look inside this run's swap.
 const PEOPLE: [Key, Address, number | null][] = [
-  ['alpha', at({ name: 'Alpha Person', city: 'Chicago', region: 'IL', postalCode: '60601' }), 1],
-  ['bravo', at({ name: 'Bravo Person', region: 'IL' }), 2],
-  ['charlie', at({ name: 'Charlie Person', city: 'Ottawa', region: 'ON', postalCode: 'K1A 0B1', country: 'CA' }), 5],
-  ['delta', at({ name: 'Delta Person', city: 'London', region: 'Greater London', postalCode: 'SW1A 1AA', country: 'GB' }), null],
-  ['echo', at({ name: 'Echo Person', city: 'New York', region: 'NY', postalCode: '10001' }), 3],
-  ['foxtrot', at({ name: 'Foxtrot Person', city: 'New York', region: 'NY', postalCode: '10002' }), null],
+  ['alpha', at({ ...nameFields('Alpha Person'), city: 'Chicago', region: 'IL', postalCode: '60601' }), 1],
+  ['bravo', at({ ...nameFields('Bravo Person'), region: 'IL' }), 2],
+  ['charlie', at({ ...nameFields('Charlie Person'), city: 'Ottawa', region: 'ON', postalCode: 'K1A 0B1', country: 'CA' }), 5],
+  ['delta', at({ ...nameFields('Delta Person'), city: 'London', region: 'Greater London', postalCode: 'SW1A 1AA', country: 'GB' }), null],
+  ['echo', at({ ...nameFields('Echo Person'), city: 'New York', region: 'NY', postalCode: '10001' }), 3],
+  ['foxtrot', at({ ...nameFields('Foxtrot Person'), city: 'New York', region: 'NY', postalCode: '10002' }), null],
 ];
 
 type Member = { userId: string };
@@ -217,7 +217,7 @@ test('one person, with their address, pod and pairings', async () => {
     madeBy: [{ userId: p.bravo.userId, name: 'Bravo Person', instagramHandle: p.bravo.handle, confirmed: false, shipped: null }],
     lastRemindedAt: null,
     lastShipRemindedAt: null,
-    address: { name: 'Charlie Person', line1: US_ADDRESS.line1, line2: '', city: 'Ottawa', region: 'ON', postalCode: 'K1A 0B1', country: 'CA' },
+    address: { ...nameFields('Charlie Person'), line1: US_ADDRESS.line1, line2: '', city: 'Ottawa', region: 'ON', postalCode: 'K1A 0B1', country: 'CA' },
   });
 
   // Alpha is made for by two people, listed by name; Foxtrot is in Default, unrated and unconfirmed.

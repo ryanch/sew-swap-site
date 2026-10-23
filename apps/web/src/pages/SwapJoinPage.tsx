@@ -182,8 +182,12 @@ export default function SwapJoinPage() {
             </select>
           </div>
           <div>
-            <label htmlFor="name">Name on the package</label>
-            <input id="name" required maxLength={200} autoComplete="name" value={address.name} onChange={(e) => set('name')(e.target.value)} />
+            <label htmlFor="firstName">First name</label>
+            <input id="firstName" required maxLength={100} autoComplete="given-name" value={address.firstName} onChange={(e) => set('firstName')(e.target.value)} />
+          </div>
+          <div>
+            <label htmlFor="lastName">Last name</label>
+            <input id="lastName" required maxLength={100} autoComplete="family-name" value={address.lastName} onChange={(e) => set('lastName')(e.target.value)} />
           </div>
           <div>
             <label htmlFor="line1">Street address</label>

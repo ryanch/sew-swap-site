@@ -8,6 +8,8 @@ export type UserDoc = { UserId: string; Email: string; DisplayName: string | nul
 export type ProfileDoc = {
   UserId: string;
   RecipientName: string | null;
+  RecipientFirstName?: string | null;
+  RecipientLastName?: string | null;
   Country: string | null;
   AddressLine1: string | null;
   AddressLine2: string | null;

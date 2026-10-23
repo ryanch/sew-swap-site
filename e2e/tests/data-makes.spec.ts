@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { adminUser, ALL_TICKED, assign, createSwap, day, getJson, join, newMember, runId, US_ADDRESS, type User } from '../helpers/api';
+import { nameFields } from '../helpers/signup';
 
 // Publishing, confirming, shipping and the email log, as stored. Across three swaps so the
 // per-swap and per-person queries are tested: two published, one not.
@@ -43,7 +44,7 @@ test.beforeAll(async () => {
   early = await createSwap(admin.api, `Makes early ${run}`, { shipBy: day(35) });
   unpublished = await createSwap(admin.api, `Makes unpublished ${run}`, { shipBy: day(30) });
 
-  const person = (name: string) => ({ ...US_ADDRESS, name: `${name} ${run}` });
+  const person = (name: string) => ({ ...US_ADDRESS, ...nameFields(`${name} ${run}`) });
   maker = await newMember('makesmaker', late, person('Maker'));
   zed = await newMember('makeszed', late, { ...person('Zed'), line2: 'Apt 9' });
   abe = await newMember('makesabe', late, person('Abe'));
@@ -113,7 +114,7 @@ test('a maker sees who they make for in every published swap, by ship date, then
       userId: zed.userId,
       name: `Zed ${run}`,
       instagramHandle: zed.handle,
-      address: { ...US_ADDRESS, name: `Zed ${run}`, line2: 'Apt 9' },
+      address: { ...US_ADDRESS, ...nameFields(`Zed ${run}`), line2: 'Apt 9' },
     },
     confirmedAt: null,
     shipped: null,
@@ -232,7 +233,7 @@ test('the email log shows each person only their own sent emails, newest first',
 // GET /api/me/emails sorts on the stored timestamp, not the whole-second string it sends.
 test('emails sent within the same second are still newest first', async () => {
   const swapId = await createSwap(admin.api, `Same second ${run}`);
-  const a = await newMember('makessame', swapId, { ...US_ADDRESS, name: `Same ${run}` });
+  const a = await newMember('makessame', swapId, { ...US_ADDRESS, ...nameFields(`Same ${run}`) });
   await join(maker, swapId, US_ADDRESS, { checked: true });
   await assign(admin.api, swapId, a.userId, maker.userId);
   await publish(swapId);

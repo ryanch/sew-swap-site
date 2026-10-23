@@ -43,6 +43,8 @@ export const COUNTRIES: [string, string][] = (() => {
 })();
 
 export type Address = {
+  firstName: string;
+  lastName: string;
   name: string;
   line1: string;
   line2: string;
@@ -52,4 +54,4 @@ export type Address = {
   country: string;
 };
 
-export const EMPTY_ADDRESS: Address = { name: '', line1: '', line2: '', city: '', region: '', postalCode: '', country: 'US' };
+export const EMPTY_ADDRESS: Address = { firstName: '', lastName: '', name: '', line1: '', line2: '', city: '', region: '', postalCode: '', country: 'US' };

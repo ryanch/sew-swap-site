@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { adminUser, assign, createSwap, getJson, newMember, runId, US_ADDRESS, type User } from '../helpers/api';
+import { nameFields } from '../helpers/signup';
 
 // Pods and pairings as stored: pod counts, names, moving, deleting and splitting pods, and
 // assignment writes. The pages and auto-assign are in pods.spec.ts.
@@ -28,7 +29,7 @@ const uid = (...keys: Key[]) => keys.map((k) => p[k].userId);
 test.beforeAll(async () => {
   admin = await adminUser();
   swapId = await createSwap(admin.api, `Pod data ${run}`);
-  for (const k of KEYS) p[k] = await newMember(`pod${k}`, swapId, { ...US_ADDRESS, name: `Person ${k.toUpperCase()}` });
+  for (const k of KEYS) p[k] = await newMember(`pod${k}`, swapId, { ...US_ADDRESS, ...nameFields(`Person ${k.toUpperCase()}`) });
 });
 
 test.afterAll(async () => {

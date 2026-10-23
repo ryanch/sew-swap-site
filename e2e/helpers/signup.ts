@@ -3,6 +3,8 @@ import { expect, type Page } from '@playwright/test';
 // The API runs the `fake` Instagram strategy locally: names starting with "private", "nosuch",
 // "exists" or "unknown" get that answer, and anything else is public.
 export const US_ADDRESS = {
+  firstName: 'Pat',
+  lastName: 'Maker',
   name: 'Pat Maker',
   line1: '1 Main St',
   line2: '',
@@ -11,6 +13,13 @@ export const US_ADDRESS = {
   postalCode: '62701',
   country: 'US',
 };
+
+/** First, last and full name fields for an address. One word gets a last name of "Sew". */
+export function nameFields(full: string) {
+  const [firstName, ...rest] = full.split(' ');
+  const lastName = rest.join(' ') || 'Sew';
+  return { firstName, lastName, name: `${firstName} ${lastName}` };
+}
 
 export const uniqueHandle = (prefix = 'maker') => `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
 
@@ -30,7 +39,8 @@ export async function joinSwap(page: Page, swapId: string) {
 /** Fills the US address fields on the sign-up page. */
 export async function fillUsAddress(page: Page) {
   await page.getByLabel('Country').selectOption('US');
-  await page.getByLabel('Name on the package').fill(US_ADDRESS.name);
+  await page.getByLabel('First name').fill(US_ADDRESS.firstName);
+  await page.getByLabel('Last name').fill(US_ADDRESS.lastName);
   await page.getByLabel('Street address').fill(US_ADDRESS.line1);
   await page.getByLabel('City').fill(US_ADDRESS.city);
   await page.getByLabel('State').selectOption(US_ADDRESS.region);

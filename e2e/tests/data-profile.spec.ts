@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { adminUser, checkInstagram, createSwap, getJson, newUser, runId, US_ADDRESS, uniqueHandle, type User } from '../helpers/api';
+import { nameFields } from '../helpers/signup';
 
 // What's saved per person (UserProfiles and InstagramChecks): the profile shared by every swap,
 // and the Instagram check rate limits. The sign-up page is in swap-signup.spec.ts.
@@ -97,7 +98,7 @@ test('one profile is shared by every swap: it prefills the next sign-up, and cha
   const first = await createSwap(admin.api, `Profile first ${run}`);
   const second = await createSwap(admin.api, `Profile second ${run}`);
   const handle = await checkInstagram(user.api, uniqueHandle('shared'));
-  const home = { ...US_ADDRESS, name: `Shared ${run}`, line2: 'Unit 1' };
+  const home = { ...US_ADDRESS, ...nameFields(`Shared ${run}`), line2: 'Unit 1' };
   expect((await user.api.put(`/api/swaps/${first}/membership`, { data: { address: home } })).status()).toBe(200);
 
   // The sign-up page for the next swap gets everything back, and joining needs no new check.
@@ -110,7 +111,7 @@ test('one profile is shared by every swap: it prefills the next sign-up, and cha
   expect((await user.api.put(`/api/swaps/${second}/membership`, { data: { address: saved.address } })).status()).toBe(200);
 
   // A new address given when joining (or re-joining) one swap is what every swap's manager sees.
-  const moved = { name: `Moved ${run}`, line1: '2 Rue Neuve', line2: '', city: 'Paris', region: '', postalCode: '75001', country: 'FR' };
+  const moved = { ...nameFields(`Moved ${run}`), line1: '2 Rue Neuve', line2: '', city: 'Paris', region: '', postalCode: '75001', country: 'FR' };
   expect((await user.api.put(`/api/swaps/${second}/membership`, { data: { address: moved } })).status()).toBe(200);
   for (const swapId of [first, second]) {
     const { member } = await getJson(admin.api, `/api/swaps/${swapId}/members/${user.userId}`);

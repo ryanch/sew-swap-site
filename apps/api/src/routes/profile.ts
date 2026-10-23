@@ -27,6 +27,8 @@ export async function readProfile(tx: Transaction | undefined, userId: string): 
   const validMs = config.instagram.checkValidDays * 24 * 60 * 60 * 1000;
   return {
     RecipientName: p.RecipientName ?? null,
+    RecipientFirstName: p.RecipientFirstName ?? null,
+    RecipientLastName: p.RecipientLastName ?? null,
     Country: p.Country ?? null,
     AddressLine1: p.AddressLine1 ?? null,
     AddressLine2: p.AddressLine2 ?? null,
@@ -40,9 +42,28 @@ export async function readProfile(tx: Transaction | undefined, userId: string): 
   };
 }
 
+/** The saved address as the API sends it. Profiles saved before first/last names have only the full name, so split it on the last space. */
+export function addressView(p: Pick<ProfileDoc, 'RecipientName' | 'RecipientFirstName' | 'RecipientLastName' | 'AddressLine1' | 'AddressLine2' | 'City' | 'Region' | 'PostalCode' | 'Country'>) {
+  const full = p.RecipientName ?? '';
+  const cut = full.lastIndexOf(' ');
+  return {
+    firstName: p.RecipientFirstName ?? (cut < 0 ? full : full.slice(0, cut)),
+    lastName: p.RecipientLastName ?? (cut < 0 ? '' : full.slice(cut + 1)),
+    name: full,
+    line1: p.AddressLine1 ?? '',
+    line2: p.AddressLine2 ?? '',
+    city: p.City ?? '',
+    region: p.Region ?? '',
+    postalCode: p.PostalCode ?? '',
+    country: p.Country ?? '',
+  };
+}
+
 export function addressColumns(a: Address) {
   return {
     RecipientName: a.name,
+    RecipientFirstName: a.firstName,
+    RecipientLastName: a.lastName,
     Country: a.country,
     AddressLine1: a.line1,
     AddressLine2: a.line2 || null,
@@ -100,17 +121,7 @@ export async function profileRoutes(app: FastifyInstance) {
     const p = await readProfile(undefined, req.user!.userId);
     return {
       email: req.user!.email,
-      address: p?.Country
-        ? {
-            name: p.RecipientName ?? '',
-            line1: p.AddressLine1 ?? '',
-            line2: p.AddressLine2 ?? '',
-            city: p.City ?? '',
-            region: p.Region ?? '',
-            postalCode: p.PostalCode ?? '',
-            country: p.Country,
-          }
-        : null,
+      address: p?.Country ? addressView(p) : null,
       instagram:
         p?.InstagramHandle && p.InstagramStatus
           ? { handle: p.InstagramHandle, result: p.InstagramStatus, checkedAt: p.InstagramCheckedAt, current: !!p.InstagramFresh }

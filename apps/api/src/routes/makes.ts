@@ -9,6 +9,7 @@ import { makersPublishedEmail, packageShippedEmail, reminderEmail, shipReminderE
 import { CARRIER_IDS, carrierLabel, normalizeTracking, toShipment, trackingUrl } from '../shipping/tracking';
 import { getSwap, swapParamsSchema, type SwapDoc } from '../swaps/access';
 import { countMembers, refuse } from './pods';
+import { addressView } from './profile';
 
 // Publishing makers and confirming them. Until the manager publishes, pairings stay the manager's
 // private view (routes/pods.ts). After that, each maker sees who they make for and confirms.
@@ -207,17 +208,7 @@ export async function makeRoutes(app: FastifyInstance) {
             userId: a.RecipientId,
             name: personName(users.get(a.RecipientId)!, p),
             instagramHandle: p?.InstagramHandle ?? null,
-            address: p?.Country
-              ? {
-                  name: p.RecipientName ?? '',
-                  line1: p.AddressLine1 ?? '',
-                  line2: p.AddressLine2 ?? '',
-                  city: p.City ?? '',
-                  region: p.Region ?? '',
-                  postalCode: p.PostalCode ?? '',
-                  country: p.Country,
-                }
-              : null,
+            address: p?.Country ? addressView(p) : null,
           },
           confirmedAt: toIso(a.ConfirmedAt),
           shipped: shipment(a),

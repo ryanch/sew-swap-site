@@ -176,7 +176,8 @@ test('joining needs a valid address for the country and a checked Instagram', as
     expect(res.status()).toBe(400);
     expect((await res.json()).error).toMatch(message);
   };
-  await expectProblem({}, /name to mail/);
+  await expectProblem({}, /first name/);
+  await expectProblem({ ...US_ADDRESS, lastName: '' }, /last name/);
   await expectProblem({ ...US_ADDRESS, postalCode: '1234' }, /ZIP/);
   await expectProblem({ ...US_ADDRESS, region: 'ON' }, /state/);
   await expectProblem({ ...US_ADDRESS, country: 'CA', region: 'ON', postalCode: '12345' }, /postal code/);

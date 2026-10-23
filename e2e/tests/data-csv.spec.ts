@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { adminUser, assign, checkInstagram, createSwap, newMember, newUser, parseCsv, runId, uniqueHandle, US_ADDRESS, type User } from '../helpers/api';
+import { nameFields } from '../helpers/signup';
 
 // The CSV export for a small swap where every cell is known: row order (Default first, then pods by
 // name with numbers in order, then people by name) and each column's value.
@@ -22,15 +23,15 @@ test.beforeAll(async () => {
     // Zoe's Instagram couldn't be confirmed, so it says "No".
     const user = await newUser('csvzoe');
     const handle = await checkInstagram(user.api, uniqueHandle('unknownzoe'));
-    const address = { ...US_ADDRESS, name: 'Zoe' };
+    const address = { ...US_ADDRESS, ...nameFields('Zoe') };
     expect((await user.api.put(`/api/swaps/${swapId}/membership`, { data: { address, instagramPublicConfirmed: true } })).status()).toBe(200);
-    return { ...user, handle, name: 'Zoe' };
+    return { ...user, handle, ...nameFields('Zoe') };
   })();
-  p.amy = await newMember('csvamy', swapId, { ...US_ADDRESS, name: 'amy' });
-  p.bob = await newMember('csvbob', swapId, { ...US_ADDRESS, name: 'Bob', line2: 'Unit 5' });
-  p.cat = await newMember('csvcat', swapId, { ...US_ADDRESS, name: 'Cat', city: 'Toronto', region: 'ON', postalCode: 'M5V 2T6', country: 'CA' });
+  p.amy = await newMember('csvamy', swapId, { ...US_ADDRESS, ...nameFields('amy') });
+  p.bob = await newMember('csvbob', swapId, { ...US_ADDRESS, ...nameFields('Bob'), line2: 'Unit 5' });
+  p.cat = await newMember('csvcat', swapId, { ...US_ADDRESS, ...nameFields('Cat'), city: 'Toronto', region: 'ON', postalCode: 'M5V 2T6', country: 'CA' });
   // A name a spreadsheet would run as a formula, and an address with a comma and a quote.
-  p.dan = await newMember('csvdan', swapId, { ...US_ADDRESS, name: '=Dan', line1: '5 Oak St, "Back"' });
+  p.dan = await newMember('csvdan', swapId, { ...US_ADDRESS, ...nameFields('=Dan'), line1: '5 Oak St, "Back"' });
 
   const pod = async (name: string, people: Person[]) => {
     const podId = (await (await admin.api.post(`/api/swaps/${swapId}/pods`, { data: { name } })).json()).pod.podId;
@@ -61,11 +62,11 @@ test('the CSV lists Default first, then pods in number order, then people by nam
   const [header, ...rows] = parseCsv(text);
   expect(header).toHaveLength(14 + 25 + 1);
   expect(rows.map((r) => [r[0], r[12]])).toEqual([
-    ['amy', 'Default'],
-    ['Zoe', 'Default'],
-    ['Bob', 'Pod 2'],
-    ['Cat', 'Pod 2'],
-    ["'=Dan", 'Pod 10'],
+    ['amy Sew', 'Default'],
+    ['Zoe Sew', 'Default'],
+    ['Bob Sew', 'Pod 2'],
+    ['Cat Sew', 'Pod 2'],
+    ["'=Dan Sew", 'Pod 10'],
   ]);
 });
 
@@ -78,25 +79,25 @@ test('every column for each person', async () => {
   const notYet = (x: Person) => [label(x), 'No', 'No', '', ''];
 
   expect(rows).toEqual([
-    ['amy', p.amy.email, ...ig(p.amy), 'Yes', 'amy', ...address, 'Default', '', ...notYet(p.bob), ...Array(4).fill(EMPTY_MAKE).flat(), label(p.bob)],
-    ['Zoe', p.zoe.email, ...ig(p.zoe), 'No', 'Zoe', ...address, 'Default', '', ...notYet(p.bob), ...Array(4).fill(EMPTY_MAKE).flat(), ''],
+    ['amy Sew', p.amy.email, ...ig(p.amy), 'Yes', 'amy Sew', ...address, 'Default', '', ...notYet(p.bob), ...Array(4).fill(EMPTY_MAKE).flat(), label(p.bob)],
+    ['Zoe Sew', p.zoe.email, ...ig(p.zoe), 'No', 'Zoe Sew', ...address, 'Default', '', ...notYet(p.bob), ...Array(4).fill(EMPTY_MAKE).flat(), ''],
     [
-      'Bob', p.bob.email, ...ig(p.bob), 'Yes', 'Bob', '1 Main St', 'Unit 5', 'Springfield', 'IL', '62701', 'US', 'Pod 2', '3',
+      'Bob Sew', p.bob.email, ...ig(p.bob), 'Yes', 'Bob Sew', '1 Main St', 'Unit 5', 'Springfield', 'IL', '62701', 'US', 'Pod 2', '3',
       // Who Bob makes for, by name; and who makes for Bob, by name, separated by "; ".
       ...notYet(p.amy), ...notYet(p.cat), ...Array(3).fill(EMPTY_MAKE).flat(),
       `${label(p.amy)}; ${label(p.zoe)}`,
     ],
-    ['Cat', p.cat.email, ...ig(p.cat), 'Yes', 'Cat', '1 Main St', '', 'Toronto', 'ON', 'M5V 2T6', 'CA', 'Pod 2', '', ...Array(5).fill(EMPTY_MAKE).flat(), label(p.bob)],
-    ["'=Dan", p.dan.email, ...ig(p.dan), 'Yes', "'=Dan", '5 Oak St, "Back"', '', 'Springfield', 'IL', '62701', 'US', 'Pod 10', '', ...Array(5).fill(EMPTY_MAKE).flat(), ''],
+    ['Cat Sew', p.cat.email, ...ig(p.cat), 'Yes', 'Cat Sew', '1 Main St', '', 'Toronto', 'ON', 'M5V 2T6', 'CA', 'Pod 2', '', ...Array(5).fill(EMPTY_MAKE).flat(), label(p.bob)],
+    ["'=Dan Sew", p.dan.email, ...ig(p.dan), 'Yes', "'=Dan Sew", '5 Oak St, "Back"', '', 'Springfield', 'IL', '62701', 'US', 'Pod 10', '', ...Array(5).fill(EMPTY_MAKE).flat(), ''],
   ]);
 });
 
 test('people who leave drop out of the CSV, along with their pairings', async () => {
   expect((await p.amy.api.delete(`/api/swaps/${swapId}/membership`)).status()).toBe(204);
   const rows = parseCsv(await (await admin.api.get(`/api/swaps/${swapId}/export.csv`)).text()).slice(1);
-  expect(rows.map((r) => r[0])).toEqual(['Zoe', 'Bob', 'Cat', "'=Dan"]);
+  expect(rows.map((r) => r[0])).toEqual(['Zoe Sew', 'Bob Sew', 'Cat Sew', "'=Dan Sew"]);
   const bob = rows[1];
-  expect([bob[14], bob[19], bob[39]]).toEqual([`Cat (@${p.cat.handle})`, '', `Zoe (@${p.zoe.handle})`]);
+  expect([bob[14], bob[19], bob[39]]).toEqual([`Cat Sew (@${p.cat.handle})`, '', `Zoe Sew (@${p.zoe.handle})`]);
   // Participants can't export.
   expect((await p.bob.api.get(`/api/swaps/${swapId}/export.csv`)).status()).toBe(403);
 });

@@ -8,6 +8,9 @@ export const US_STATES = [
 export const CA_PROVINCES = ['AB', 'BC', 'MB', 'NB', 'NL', 'NS', 'NT', 'NU', 'ON', 'PE', 'QC', 'SK', 'YT'];
 
 export type Address = {
+  firstName: string;
+  lastName: string;
+  /** `First Last`, derived on validation. The label on the package. */
   name: string;
   line1: string;
   line2: string;
@@ -17,8 +20,9 @@ export type Address = {
   country: string;
 };
 
-const LIMITS: Record<keyof Address, number> = {
-  name: 200,
+const LIMITS: Record<Exclude<keyof Address, 'name'>, number> = {
+  firstName: 100,
+  lastName: 100,
   line1: 200,
   line2: 200,
   city: 100,
@@ -32,14 +36,16 @@ export function validateAddress(raw: unknown): { address: Address } | { error: s
   if (!raw || typeof raw !== 'object') return { error: 'Please fill in your mailing address.' };
   const input = raw as Record<string, unknown>;
   const a = {} as Address;
-  for (const key of Object.keys(LIMITS) as (keyof Address)[]) {
+  for (const key of Object.keys(LIMITS) as (keyof typeof LIMITS)[]) {
     const value = input[key] ?? '';
     if (typeof value !== 'string') return { error: 'Please fill in your mailing address.' };
     a[key] = value.trim().replace(/\s+/g, ' ');
     if (a[key].length > LIMITS[key]) return { error: 'Part of your address is too long.' };
   }
   a.country = a.country.toUpperCase();
-  if (!a.name) return { error: 'Please enter the name to mail your package to.' };
+  if (!a.firstName) return { error: 'Please enter your first name.' };
+  if (!a.lastName) return { error: 'Please enter your last name.' };
+  a.name = `${a.firstName} ${a.lastName}`;
   if (!a.line1) return { error: 'Please enter your street address.' };
   if (!a.city) return { error: 'Please enter your city.' };
   if (!/^[A-Z]{2}$/.test(a.country)) return { error: 'Please choose your country.' };

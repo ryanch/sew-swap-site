@@ -12,6 +12,7 @@ import {
   US_ADDRESS,
   type User,
 } from '../helpers/api';
+import { nameFields } from '../helpers/signup';
 
 // What the swap lists and swap pages read back from the database: order, counts, status, and
 // what joining, re-joining and leaving store. The UI flows are in swaps.spec.ts.
@@ -166,7 +167,7 @@ test('joining again updates the address and keeps one membership', async () => {
   expect(joinedAt).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
   expect(first.member.joinedAt).toBe(joinedAt);
 
-  const moved = { name: `Moved ${run}`, line1: '9 Elm St', line2: 'Apt 4', city: 'Portland', region: 'or', postalCode: '97201', country: 'us' };
+  const moved = { ...nameFields(`Moved ${run}`), line1: '9 Elm St', line2: 'Apt 4', city: 'Portland', region: 'or', postalCode: '97201', country: 'us' };
   expect((await user.api.put(`/api/swaps/${swapId}/membership`, { data: { address: moved } })).status()).toBe(200);
 
   const list = await getJson(admin.api, `/api/swaps/${swapId}/members`);

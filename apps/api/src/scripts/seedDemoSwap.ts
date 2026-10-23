@@ -14,7 +14,7 @@ import { col, db, memberId, now } from '../db/firestore';
 import { validateAddress, type Address } from '../profile/address';
 import { addressColumns } from '../routes/profile';
 
-type Place = Omit<Address, 'name' | 'line1' | 'line2'>;
+type Place = Omit<Address, 'name' | 'firstName' | 'lastName' | 'line1' | 'line2'>;
 const us = (city: string, region: string, postalCode: string): Place => ({ city, region, postalCode, country: 'US' });
 const ca = (city: string, region: string, postalCode: string): Place => ({ city, region, postalCode, country: 'CA' });
 
@@ -96,7 +96,7 @@ async function main() {
   const people = places.map((place, i) => {
     const first = FIRST[i];
     const last = LAST[i % LAST.length];
-    const checked = validateAddress({ name: `${first} ${last}`, line1: `${100 + i} Main St`, line2: '', ...place });
+    const checked = validateAddress({ firstName: first, lastName: last, line1: `${100 + i} Main St`, line2: '', ...place });
     if ('error' in checked) throw new Error(`${place.city}: ${checked.error}`);
     return {
       email: `demo${String(i + 1).padStart(2, '0')}@example.test`,

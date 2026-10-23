@@ -10,6 +10,7 @@ import { newPairingEmail } from '../email/templates';
 import { toCsv } from '../pods/csv';
 import { planLoop } from '../pods/loop';
 import { planSplit } from '../pods/split';
+import { addressView } from './profile';
 import { carrierLabel, toShipment, type Shipment } from '../shipping/tracking';
 import { canManage, getSwap, swapParamsSchema } from '../swaps/access';
 
@@ -340,17 +341,7 @@ export async function podRoutes(app: FastifyInstance) {
       return {
         member: {
           ...toMember(r, data, await pairingsFor(data, [userId])),
-          address: p?.Country
-            ? {
-                name: p.RecipientName ?? '',
-                line1: p.AddressLine1 ?? '',
-                line2: p.AddressLine2 ?? '',
-                city: p.City ?? '',
-                region: p.Region ?? '',
-                postalCode: p.PostalCode ?? '',
-                country: p.Country,
-              }
-            : null,
+          address: p?.Country ? addressView(p) : null,
         },
       };
     },

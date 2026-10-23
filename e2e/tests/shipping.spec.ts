@@ -1,7 +1,7 @@
 import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import { signIn } from '../helpers/auth';
 import { emailSubjects, listEmailIds, uniqueEmail, waitForEmail } from '../helpers/mailpit';
-import { uniqueHandle, US_ADDRESS } from '../helpers/signup';
+import { nameFields, uniqueHandle, US_ADDRESS } from '../helpers/signup';
 
 const ADMIN_EMAIL = 'admin@example.test';
 
@@ -35,7 +35,7 @@ async function newMaker(browser: Browser, key: string): Promise<Maker> {
   await signIn(page, email);
   expect((await page.request.post('/api/me/instagram/check', { data: { input: uniqueHandle(key.toLowerCase()) } })).status()).toBe(200);
   const name = `${key} ${run}`;
-  const joined = await page.request.put(`/api/swaps/${swapId}/membership`, { data: { address: { ...US_ADDRESS, name } } });
+  const joined = await page.request.put(`/api/swaps/${swapId}/membership`, { data: { address: { ...US_ADDRESS, ...nameFields(name) } } });
   expect(joined.status()).toBe(200);
   const userId = (await (await page.request.get('/api/auth/me')).json()).user.userId as string;
   return { key, name, email, userId, context, page };
