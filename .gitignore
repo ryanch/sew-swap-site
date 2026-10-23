@@ -39,3 +39,5 @@ Thumbs.db
 
 
 temp/*
+# Settings saved by ./deploy.sh
+deploy.env

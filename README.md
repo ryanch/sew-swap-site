@@ -61,6 +61,15 @@ apps/web   React + Vite SPA, served by nginx in prod (Cloud Run service)
 e2e/       Playwright end-to-end tests
 ```
 
+## Deploying to GCP
+
+```sh
+brew install --cask google-cloud-sdk   # once
+./deploy.sh
+```
+
+The script asks for the project, admin emails and SMTP settings (saved in `deploy.env`, which is gitignored), and asks for secrets once (stored in Secret Manager). Then it sets up Firestore and the service accounts, and builds and deploys both Cloud Run services. Run it again to ship updates. To change a secret, add a new version and redeploy: `printf '%s' NEW | gcloud secrets versions add smtp-pass --data-file=-`, then `./deploy.sh`.
+
 ## Production images
 
 Each Dockerfile has a `dev` target (used by compose) and a `prod` target (for Cloud Run):
